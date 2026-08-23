@@ -1,0 +1,18 @@
+# ESP-IDF build output and local configuration.
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+.vscode/
+
+# Credentials are provisioned locally and must never be committed.
+secrets.h
+main/private_config.h
+
+# Legacy Arduino snapshots contain local configuration; keep them local.
+code.ino
+reference.ino
+
+# Locally cloned upstream source used only for hardware reference.
+reference-repo/

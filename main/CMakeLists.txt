@@ -1,0 +1,21 @@
+idf_component_register(
+  SRCS
+    "main.cpp"
+    "audio.cpp"
+    "cloud.cpp"
+  INCLUDE_DIRS
+    "include"
+    ".."
+  REQUIRES
+    app_update
+    esp_event
+    esp_http_client
+    esp_netif
+    esp-tls
+    esp_wifi
+    driver
+    heap
+    json
+    lwip
+    nvs_flash
+)
