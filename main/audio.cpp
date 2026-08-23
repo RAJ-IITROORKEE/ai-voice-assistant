@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "playback_policy.h"
 #include "voice_config.h"
 
 #include <math.h>
@@ -22,7 +23,9 @@ size_t s_capacity = 0;
 uint8_t* s_pcm_ring = nullptr;
 constexpr size_t kRingBytes = static_cast<size_t>(voice_config::kAudioRingSamples) * sizeof(int16_t);
 constexpr size_t kPrebufferBytes = static_cast<size_t>(voice_config::kAudioPrebufferSamples) * sizeof(int16_t);
+constexpr size_t kRebufferBytes = static_cast<size_t>(voice_config::kAudioRebufferSamples) * sizeof(int16_t);
 constexpr size_t kPlaybackBlockBytes = static_cast<size_t>(voice_config::kPlaybackBlockSamples) * sizeof(int16_t);
+constexpr uint32_t kTonePlaybackTurn = UINT32_MAX;
 SemaphoreHandle_t s_ring_mutex = nullptr;
 SemaphoreHandle_t s_data_ready = nullptr;
 SemaphoreHandle_t s_space_ready = nullptr;
@@ -33,6 +36,11 @@ size_t s_ring_used = 0;
 bool s_playing = false;
 bool s_started = false;
 bool s_finish_requested = false;
+bool s_rebuffering = false;
+uint32_t s_playback_turn = 0;
+size_t s_peak_ring_bytes = 0;
+uint32_t s_underrun_count = 0;
+TickType_t s_rebuffer_started = 0;
 uint8_t s_pcm_tail = 0;
 bool s_has_pcm_tail = false;
 
@@ -78,6 +86,7 @@ void ring_copy_in(const uint8_t* data, size_t bytes) {
   if (bytes > first) memcpy(s_pcm_ring, data + first, bytes - first);
   s_ring_write = (s_ring_write + bytes) % kRingBytes;
   s_ring_used += bytes;
+  if (s_ring_used > s_peak_ring_bytes) s_peak_ring_bytes = s_ring_used;
 }
 
 void ring_copy_out(uint8_t* data, size_t bytes) {
@@ -88,11 +97,14 @@ void ring_copy_out(uint8_t* data, size_t bytes) {
   s_ring_used -= bytes;
 }
 
-bool enqueue_pcm(const uint8_t* data, size_t bytes, uint32_t timeout_ms) {
+bool enqueue_pcm(const uint8_t* data, size_t bytes, uint32_t turn_id, uint32_t timeout_ms) {
   const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
   while (bytes) {
     if (xSemaphoreTake(s_ring_mutex, pdMS_TO_TICKS(20)) != pdPASS) continue;
-    if (!s_playing || s_finish_requested) { xSemaphoreGive(s_ring_mutex); return false; }
+    if (!s_playing || s_finish_requested || !playback_turn_matches(s_playback_turn, turn_id)) {
+      xSemaphoreGive(s_ring_mutex);
+      return false;
+    }
     const size_t free_bytes = kRingBytes - s_ring_used;
     const size_t copy = (bytes < free_bytes) ? bytes : free_bytes;
     if (copy) ring_copy_in(data, copy);
@@ -121,20 +133,37 @@ void playback_task(void*) {
         xSemaphoreGive(s_ring_mutex);
         break;
       }
-      if (!s_started && s_ring_used < kPrebufferBytes && !s_finish_requested) {
+      stop = s_finish_requested && s_ring_used == 0;
+      const size_t start_threshold = s_rebuffering ? kRebufferBytes : kPrebufferBytes;
+      if (!stop && (!s_started || s_rebuffering) &&
+          !playback_should_start(s_ring_used, start_threshold, s_finish_requested)) {
         xSemaphoreGive(s_ring_mutex);
         break;
       }
-      s_started = true;
+      if (!s_started) {
+        s_started = true;
+        ESP_LOGI(kTag, "turn %u I2S playback started; buffered=%u", static_cast<unsigned>(s_playback_turn),
+                 static_cast<unsigned>(s_ring_used));
+      } else if (s_rebuffering) {
+        s_rebuffering = false;
+        ESP_LOGW(kTag, "turn %u playback resumed after %u ms; buffered=%u",
+                 static_cast<unsigned>(s_playback_turn),
+                 static_cast<unsigned>((xTaskGetTickCount() - s_rebuffer_started) * portTICK_PERIOD_MS),
+                 static_cast<unsigned>(s_ring_used));
+      }
       bytes = (s_ring_used < sizeof(block)) ? s_ring_used : sizeof(block);
       if (bytes) ring_copy_out(block, bytes);
       stop = s_finish_requested && s_ring_used == 0;
       if (!bytes && !stop) {
-        ESP_LOGW(kTag, "playback underrun; waiting for TTS data");
+        if (!s_rebuffering) {
+          s_rebuffering = true;
+          s_rebuffer_started = xTaskGetTickCount();
+          ++s_underrun_count;
+          ESP_LOGW(kTag, "turn %u playback underrun; rebuffering", static_cast<unsigned>(s_playback_turn));
+        }
         xSemaphoreGive(s_ring_mutex);
         break;
       }
-      if (stop) s_playing = false;
       xSemaphoreGive(s_ring_mutex);
       if (bytes) {
         xSemaphoreGive(s_space_ready);
@@ -142,7 +171,6 @@ void playback_task(void*) {
         if (i2s_write(kPort, block, bytes, &written, pdMS_TO_TICKS(1000)) != ESP_OK || written != bytes) {
           ESP_LOGW(kTag, "I2S playback write failed");
           xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
-          s_playing = false;
           s_finish_requested = true;
           stop = true;
           xSemaphoreGive(s_ring_mutex);
@@ -153,8 +181,14 @@ void playback_task(void*) {
       vTaskDelay(pdMS_TO_TICKS(120));
       i2s_zero_dma_buffer(kPort);
       gpio_set_level(static_cast<gpio_num_t>(voice_config::kAmpEnableGpio), 0);
-      xSemaphoreGive(s_playback_done);
-      break;
+       xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
+       s_playing = false;
+       xSemaphoreGive(s_playback_done);
+       xSemaphoreGive(s_ring_mutex);
+      ESP_LOGI(kTag, "turn %u playback complete; peak=%u underruns=%u",
+               static_cast<unsigned>(s_playback_turn), static_cast<unsigned>(s_peak_ring_bytes),
+               static_cast<unsigned>(s_underrun_count));
+       break;
     }
   }
 }
@@ -206,21 +240,22 @@ esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cance
 
 void audio_reset_recording(void) {}
 
-esp_err_t audio_playback_begin(uint32_t) {
+esp_err_t audio_playback_begin(uint32_t turn_id) {
   xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
   if (s_playing) { xSemaphoreGive(s_ring_mutex); return ESP_ERR_INVALID_STATE; }
   while (xSemaphoreTake(s_playback_done, 0) == pdPASS) {}
   s_ring_read = 0; s_ring_write = 0; s_ring_used = 0; s_started = false; s_finish_requested = false;
-  s_has_pcm_tail = false; s_playing = true;
+  s_rebuffering = false; s_peak_ring_bytes = 0; s_underrun_count = 0;
+  s_has_pcm_tail = false; s_playback_turn = turn_id; s_playing = true;
   xSemaphoreGive(s_ring_mutex);
   set_rate(voice_config::kTtsRateHz); codec_enable_speaker();
   return ESP_OK;
 }
-bool audio_playback_write(const uint8_t* data, size_t len, uint32_t, uint32_t timeout_ms) {
-  if (!s_playing || !data) return false;
+bool audio_playback_write(const uint8_t* data, size_t len, uint32_t turn_id, uint32_t timeout_ms) {
+  if (!data) return false;
   if (s_has_pcm_tail && len) {
     const uint8_t sample[] = {s_pcm_tail, data[0]};
-    if (!enqueue_pcm(sample, sizeof(sample), timeout_ms)) return false;
+    if (!enqueue_pcm(sample, sizeof(sample), turn_id, timeout_ms)) return false;
     s_has_pcm_tail = false;
     ++data;
     --len;
@@ -231,36 +266,61 @@ bool audio_playback_write(const uint8_t* data, size_t len, uint32_t, uint32_t ti
     --len;
   }
   if (!len) return true;
-  return enqueue_pcm(data, len, timeout_ms);
+  return enqueue_pcm(data, len, turn_id, timeout_ms);
 }
-void audio_playback_finish(uint32_t) {
+bool audio_playback_finish(uint32_t turn_id) {
   // Raw PCM is 16-bit; an unpaired network byte cannot be played safely.
-  s_has_pcm_tail = false;
   xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
-  if (!s_playing) { xSemaphoreGive(s_ring_mutex); return; }
+  if (!s_playing || !playback_turn_matches(s_playback_turn, turn_id)) { xSemaphoreGive(s_ring_mutex); return false; }
+  s_has_pcm_tail = false;
   s_finish_requested = true;
   xSemaphoreGive(s_ring_mutex);
   xSemaphoreGive(s_data_ready);
-  xSemaphoreTake(s_playback_done, pdMS_TO_TICKS(5000));
+  if (xSemaphoreTake(s_playback_done, pdMS_TO_TICKS(voice_config::kPlaybackDrainTimeoutMs)) != pdPASS) {
+    ESP_LOGW(kTag, "turn %u playback drain timed out", static_cast<unsigned>(turn_id));
+    return false;
+  }
+  return !audio_playback_is_active();
 }
 void audio_playback_cancel(void) {
   xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
   s_has_pcm_tail = false; s_ring_read = 0; s_ring_write = 0; s_ring_used = 0;
-  s_finish_requested = true; s_playing = false;
+  s_finish_requested = true;
   xSemaphoreGive(s_ring_mutex);
   i2s_zero_dma_buffer(kPort); gpio_set_level(static_cast<gpio_num_t>(voice_config::kAmpEnableGpio), 0);
-  xSemaphoreGive(s_data_ready); xSemaphoreGive(s_playback_done);
+  xSemaphoreGive(s_data_ready);
 }
-bool audio_playback_is_active(void) { return s_playing; }
+bool audio_playback_is_active(void) {
+  xSemaphoreTake(s_ring_mutex, portMAX_DELAY);
+  const bool active = s_playing;
+  xSemaphoreGive(s_ring_mutex);
+  return active;
+}
 bool audio_playback_wait_idle(uint32_t timeout_ms) {
   const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
-  while (s_playing && static_cast<int32_t>(deadline - xTaskGetTickCount()) > 0) vTaskDelay(pdMS_TO_TICKS(10));
-  return !s_playing;
+  while (audio_playback_is_active() && static_cast<int32_t>(deadline - xTaskGetTickCount()) > 0) vTaskDelay(pdMS_TO_TICKS(10));
+  return !audio_playback_is_active();
 }
 void audio_play_tone(uint16_t frequency_hz, uint16_t duration_ms, uint8_t volume_percent) {
-  audio_playback_begin(0); const int samples = voice_config::kTtsRateHz * duration_ms / 1000; int16_t tone[240];
+  if (audio_playback_begin(kTonePlaybackTurn) != ESP_OK) {
+    ESP_LOGW(kTag, "tone skipped while playback is active");
+    return;
+  }
+  ESP_LOGI(kTag, "tone %u Hz for %u ms", static_cast<unsigned>(frequency_hz), static_cast<unsigned>(duration_ms));
+  const int samples = voice_config::kTtsRateHz * duration_ms / 1000; int16_t tone[240];
+  const int envelope_samples = (voice_config::kTtsRateHz * 3) / 1000;
   for (int base = 0; base < samples; base += 240) { const int n = (samples - base) < 240 ? samples - base : 240;
-    for (int i = 0; i < n; ++i) tone[i] = static_cast<int16_t>(sin(2.0 * M_PI * frequency_hz * (base + i) / voice_config::kTtsRateHz) * 32767 * volume_percent / 100);
-    audio_playback_write(reinterpret_cast<const uint8_t*>(tone), n * sizeof(int16_t), 0, 1000); }
-  audio_playback_finish(0);
+    for (int i = 0; i < n; ++i) {
+      const int sample = base + i;
+      const int fade = sample < envelope_samples ? sample : samples - 1 - sample;
+      const float envelope = fade < envelope_samples ? static_cast<float>(fade) / envelope_samples : 1.0F;
+      tone[i] = static_cast<int16_t>(sin(2.0 * M_PI * frequency_hz * sample / voice_config::kTtsRateHz) *
+                                     32767 * volume_percent * envelope / 100);
+    }
+    if (!audio_playback_write(reinterpret_cast<const uint8_t*>(tone), n * sizeof(int16_t), kTonePlaybackTurn, 1000)) {
+      audio_playback_cancel();
+      return;
+    }
+  }
+  if (!audio_playback_finish(kTonePlaybackTurn)) audio_playback_cancel();
 }

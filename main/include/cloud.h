@@ -31,7 +31,7 @@ using TtsAudioCallback = bool (*)(const uint8_t* pcm, size_t len, uint32_t turn_
 esp_err_t cloud_init_wifi(void);
 bool cloud_wifi_connected(void);
 
-// Uses the documented short-audio REST endpoint with a bounded WAV upload.
+// Uses Fast Transcription for the completed WAV, then short-audio REST only as fallback.
 bool cloud_transcribe(const Recording& recording, char* transcript, size_t transcript_size,
                       volatile bool* cancelled, CloudResult* result);
 

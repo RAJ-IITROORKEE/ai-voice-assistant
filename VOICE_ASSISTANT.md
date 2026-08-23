@@ -4,7 +4,7 @@
 
 Luna is a push-to-talk voice assistant for the M5Stack Atom VoiceS3R (C126-ECHO). A user holds the hardware button to talk, releases it to submit the utterance, hears an analysing tone while cloud work is pending, and hears a clear spoken reply as soon as its first sentence is synthesized.
 
-The target is a warm-network release-to-first-speech p50 below 2 seconds and p95 below 3.5 seconds for typical 5-10 second requests. The device is intentionally half-duplex: pressing the button while Luna is speaking cancels playback and starts a new recording.
+The long-term target is a warm-network release-to-first-speech p50 below 2 seconds and p95 below 3.5 seconds for typical 5-10 second requests. The direct-cloud MVP is intentionally half-duplex. Pressing the button during cloud work or playback cancels the current turn, although an in-flight HTTP request can still take until its timeout to return.
 
 ## Target Hardware
 
@@ -48,25 +48,24 @@ button event
            -> Azure Speech Fast Transcription
               -> Azure Speech short-audio fallback
                  -> Azure OpenAI Responses SSE
-                    -> sentence assembler
-                       -> bounded TTS queue
-                          -> Azure Speech TTS raw PCM stream
-                             -> PSRAM jitter ring
-                                -> I2S TX / ES8311 at 24 kHz
+                     -> bounded sentence assembler
+                        -> first TTS segment cache + concurrent next-segment cache
+                           -> ordered 14-second PSRAM playback ring
+                              -> I2S TX / ES8311 at 24 kHz
 ```
 
-The first completed spoken sentence is sent to TTS while Responses SSE continues to deliver later text. TTS response bytes are inserted into a playback ring and the I2S playback task starts after a small prebuffer; full-answer or full-sentence audio is never required in RAM.
+The first completed spoken sentence is sent to TTS while Responses SSE continues to deliver later text. Each bounded TTS segment is fully cached before it becomes audible because device telemetry proved that raw Azure REST PCM sometimes arrives slower than real-time on the target network. A second PSRAM cache synthesizes the next segment concurrently, then hands it to the ordered playback ring. This trades some first-audio delay for continuous speech and avoids network-paced 0.5-1 second breaks.
 
 ## Implementation Status
 
-The ESP-IDF project builds for `esp32s3` with verified TLS, 60-second PSRAM WAV capture, short-audio STT, fragmented Responses SSE parsing, a bounded sentence-to-TTS worker queue, direct raw-PCM playback, an analysing tone, and an NTP-based time-of-day Luna greeting after Wi-Fi connects. It does not log keys, transcripts, or response bodies.
+The ESP-IDF project builds for `esp32s3` with verified TLS, 60-second PSRAM WAV capture, Fast Transcription multipart with short-audio fallback, fragmented Responses SSE parsing, bounded sentence queues, dual 12-second TTS segment caches, and an ordered 14-second PSRAM playback ring. Local ready, recording-start, and recording-stop tones use the same checked audio path. It does not log keys, transcripts, or response bodies.
 
-The direct MVP currently uses the short-audio REST endpoint rather than Fast Transcription multipart. Playback streams directly into I2S, not the target PSRAM jitter ring/prebuffer. Cancellation mutes active audio and invalidates queued sentences, but an in-flight HTTP request can take until its timeout to return; true low-latency cancellation still needs cancellable network workers. Device behavior remains unverified because the attached ESP32-S3 USB interface has not returned ROM or serial-monitor bytes.
+The latest image is flashed and hash-verified on the Atom VoiceS3R through COM14. Boot logs verify 8 MB PSRAM, codec initialization, Wi-Fi, `READY`, and a local tone with zero underruns. The user completed a physical push-to-talk turn and confirmed that the full reply was smooth and complete. The separate passive telemetry capture failed to start, so no post-fix stage timing is claimed. The spoken time-of-day greeting is intentionally disabled: cloud synthesis previously blocked readiness for 25-30 seconds, so boot currently uses an immediate local ready tone.
 
 ## State Model
 
 ```text
-BOOT -> CONNECTING -> GREETING -> READY -> RECORDING -> TRANSCRIBING
+BOOT -> CONNECTING -> READY -> RECORDING -> TRANSCRIBING
                                                  -> GENERATING -> SPEAKING -> READY
 ```
 
@@ -77,7 +76,7 @@ Button press while `SPEAKING`, `TRANSCRIBING`, or `GENERATING` cancels the curre
 - STT primary: Azure Speech Fast Transcription multipart endpoint. It is optimized for quick final transcription after release.
 - STT fallback: existing Azure short-audio WAV endpoint, preserving the currently working API path.
 - LLM: Azure OpenAI Responses API with `stream: true`, `store: false`, bounded output tokens, and robust SSE event parsing.
-- TTS: Azure Speech REST `raw-24khz-16bit-mono-pcm`; HTTP body bytes play as they arrive.
+- TTS: Azure Speech REST `raw-24khz-16bit-mono-pcm`; complete bounded segments are cached, prefetched concurrently, and played in order.
 - Locale: current configuration still defaults to `en-IN`. Hindi/Hinglish locale/voice selection is a separately tracked validation item; do not claim acoustic emotion recognition from text-only STT.
 
 ## Security Boundary
@@ -86,7 +85,7 @@ Button press while `SPEAKING`, `TRANSCRIBING`, or `GENERATING` cancels the curre
 
 ## Future Low-Latency Architecture
 
-For sub-second, continuous/duplex interaction, use one authenticated device-to-relay WebSocket. The relay should run the supported Azure Speech SDK push-audio STT and TTS text streaming APIs, hold Azure credentials, and forward binary PCM instead of base64. Do not reverse engineer Azure Speech's internal WebSocket protocol on the ESP32. This is not required for the direct-cloud MVP.
+For Google-Assistant-like latency, use one persistent authenticated device-to-relay WebSocket. The relay should run the supported Azure Speech SDK push-audio STT and TTS text-streaming APIs, hold Azure credentials, and forward binary PCM instead of base64. The direct Fast Transcription API cannot return interim text, and REST TTS cannot accept incremental LLM text in one synthesis. Do not reverse engineer Azure Speech's internal WebSocket protocol on the ESP32.
 
 ## Verification Metrics
 

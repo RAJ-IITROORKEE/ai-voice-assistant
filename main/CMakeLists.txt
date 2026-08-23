@@ -3,6 +3,10 @@ idf_component_register(
     "main.cpp"
     "audio.cpp"
     "cloud.cpp"
+    "multipart_form.cpp"
+    "playback_policy.cpp"
+    "sse_protocol.cpp"
+    "tts_pipeline_policy.cpp"
   INCLUDE_DIRS
     "include"
     ".."
@@ -11,6 +15,7 @@ idf_component_register(
     esp_event
     esp_http_client
     esp_netif
+    esp_timer
     esp-tls
     esp_wifi
     driver
