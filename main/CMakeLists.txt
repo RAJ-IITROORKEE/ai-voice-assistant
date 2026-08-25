@@ -1,26 +1,28 @@
+set(RELAY_EMBED_FILES)
+if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/certs/relay_ca.pem")
+  list(APPEND RELAY_EMBED_FILES "certs/relay_ca.pem")
+endif()
+
 idf_component_register(
   SRCS
     "main.cpp"
     "audio.cpp"
-    "cloud.cpp"
-    "multipart_form.cpp"
     "playback_policy.cpp"
-    "sse_protocol.cpp"
-    "tts_pipeline_policy.cpp"
+    "relay_protocol.cpp"
+    "relay_client.cpp"
   INCLUDE_DIRS
     "include"
-    ".."
   REQUIRES
-    app_update
     esp_event
-    esp_http_client
     esp_netif
-    esp_timer
     esp-tls
     esp_wifi
+    esp_websocket_client
     driver
     heap
     json
     lwip
     nvs_flash
+  EMBED_TXTFILES
+    ${RELAY_EMBED_FILES}
 )

@@ -1,0 +1,16 @@
+.git/
+.vscode/
+build/
+managed_components/
+reference-repo/
+secrets.h
+code.ino
+reference.ino
+main/private_config.h
+main/wifi_config.h
+main/relay_config.h
+main/certs/
+relay/appsettings.Local.json
+relay/certs/
+relay/**/bin/
+relay/**/obj/

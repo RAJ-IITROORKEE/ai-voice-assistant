@@ -221,7 +221,8 @@ esp_err_t audio_init(void) {
   return ESP_OK;
 }
 
-esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cancelled) {
+esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cancelled,
+                                      CaptureAudioCallback callback, void* callback_context) {
   if (!recording || !s_wav) return ESP_ERR_INVALID_STATE;
   *recording = {s_wav, s_capacity, 0, false, false}; codec_enable_mic(); set_rate(voice_config::kCaptureRateHz);
   size_t used = 0; int64_t energy = 0; int16_t block[voice_config::kCaptureBlockSamples];
@@ -231,6 +232,9 @@ esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cance
     if (err != ESP_OK) return err;
     if (used + received > s_capacity - 44) { recording->truncated = true; break; }
     memcpy(s_wav + 44 + used, block, received); used += received;
+    if (callback && !callback(s_wav + 44 + used - received, received, callback_context)) {
+      callback = nullptr;
+    }
     for (size_t i = 0; i < received / sizeof(int16_t); ++i) energy += abs(block[i]);
   }
   recording->data_bytes = used; write_wav_header(s_wav, used);

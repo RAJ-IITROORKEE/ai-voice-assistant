@@ -9,6 +9,11 @@ dependencies.lock
 # Credentials are provisioned locally and must never be committed.
 secrets.h
 main/private_config.h
+main/wifi_config.h
+main/relay_config.h
+main/certs/relay_ca.pem
+relay/appsettings.Local.json
+relay/certs/
 
 # Legacy Arduino snapshots contain local configuration; keep them local.
 code.ino
@@ -16,3 +21,12 @@ reference.ino
 
 # Locally cloned upstream source used only for hardware reference.
 reference-repo/
+
+# .NET relay outputs and local development state.
+relay/**/bin/
+relay/**/obj/
+relay/TestResults/
+relay/*.log
+relay/*.local.xml
+relay/.cloud-deployment.json
+relay/.gcloud-deployment.json

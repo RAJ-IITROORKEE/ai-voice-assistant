@@ -2,31 +2,16 @@
 
 #include <stddef.h>
 
-// Local settings are ignored. Existing Azure keys remain in the historical
-// root secrets.h until they are rotated and replaced with device provisioning.
+// Local settings are ignored. The relay owns Azure credentials; the device only
+// retains Wi-Fi and its revocable relay token in ignored local files.
 #include "../private_config.h"
-
-// secrets.h is legacy storage, so it is included only by cloud.cpp.
-extern const char* AZURE_AI_API_KEY;
-extern const char* AZURE_SPEECH_KEY;
+#include "../wifi_config.h"
 
 #ifndef WIFI_SSID
-#error "Define WIFI_SSID in the root secrets.h. See main/include/private_config.example.h."
+#error "Define WIFI_SSID in main/private_config.h or main/wifi_config.h."
 #endif
 #ifndef WIFI_PASSWORD
-#error "Define WIFI_PASSWORD in the root secrets.h. See main/include/private_config.example.h."
-#endif
-#ifndef AZURE_AI_ENDPOINT
-#error "Define AZURE_AI_ENDPOINT in the root secrets.h."
-#endif
-#ifndef AZURE_AI_MODEL
-#error "Define AZURE_AI_MODEL in the root secrets.h."
-#endif
-#ifndef AZURE_SPEECH_ENDPOINT
-#error "Define AZURE_SPEECH_ENDPOINT in the root secrets.h."
-#endif
-#ifndef AZURE_TTS_ENDPOINT
-#error "Define AZURE_TTS_ENDPOINT in the root secrets.h."
+#error "Define WIFI_PASSWORD in main/private_config.h or main/wifi_config.h."
 #endif
 
 #ifndef SPEECH_LANGUAGE
@@ -62,24 +47,21 @@ constexpr int kI2sRxGpio = 4;
 
 constexpr int kCaptureRateHz = 16000;
 constexpr int kTtsRateHz = 24000;
-constexpr int kMaxRecordSeconds = 60;
+constexpr int kMaxRecordSeconds = 90;
 constexpr int kMinRecordMilliseconds = 350;
 constexpr int kCaptureBlockSamples = 320;
 constexpr int kPlaybackBlockSamples = 480;
-constexpr int kAudioRingSamples = 336000;  // Fourteen seconds of 24 kHz PCM in PSRAM.
-constexpr int kAudioPrebufferSamples = 28800;  // 1.2 s jitter cover before first speech.
+constexpr int kAudioRingSamples = 120000;  // Five seconds of 24 kHz PCM in PSRAM.
+constexpr int kAudioPrebufferSamples = 5760;  // 240 ms local-WSS jitter cover before first speech.
 constexpr int kAudioRebufferSamples = 4800;  // 200 ms recovery after a transient underrun.
-constexpr uint32_t kTtsWriteTimeoutMs = 30000;
+constexpr uint32_t kTtsWriteTimeoutMs = 10000;
 constexpr uint32_t kPlaybackDrainTimeoutMs = 15000;
-constexpr int kSentenceBytes = 320;
-constexpr size_t kTtsTextSoftLimitBytes = 160;
-constexpr int kTtsPrefetchQueueDepth = 17;  // Sixteen segments plus a reserved finish marker.
-constexpr size_t kTtsLookaheadBytes = 576000;  // Twelve seconds of 24 kHz PCM in PSRAM.
-constexpr size_t kFastSttResponseBytes = 64 * 1024;
-constexpr int kHttpTimeoutMs = 15000;
-constexpr int kResponsesIdleTimeoutMs = 30000;
-constexpr int kMaxAnswerTokens = 280;
-
-constexpr const char* kTimezone = "IST-5:30";
+constexpr int kRelayUplinkFrameBytes = 640;  // 20 ms at 16 kHz PCM16.
+constexpr int kRelayDownlinkFrameBytes = 960;  // 20 ms at 24 kHz PCM16.
+constexpr uint32_t kRelayUplinkFrameMilliseconds = 20;
+constexpr uint32_t kRelayUplinkBacklogMilliseconds = 10000;
+constexpr size_t kRelayUplinkQueueDepth = 512;  // Ten seconds plus scheduling margin.
+constexpr uint32_t kRelayUplinkDrainTimeoutMs = 20000;
+constexpr size_t kRelayDownlinkQueueDepth = 128;  // 2.56 seconds of 20 ms PCM frames.
 
 }  // namespace voice_config
