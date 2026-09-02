@@ -18,8 +18,6 @@ namespace {
 constexpr char kTag[] = "audio";
 constexpr i2s_port_t kPort = I2S_NUM_1;
 constexpr uint8_t kCodecAddress = 0x18;
-uint8_t* s_wav = nullptr;
-size_t s_capacity = 0;
 uint8_t* s_pcm_ring = nullptr;
 constexpr size_t kRingBytes = static_cast<size_t>(voice_config::kAudioRingSamples) * sizeof(int16_t);
 constexpr size_t kPrebufferBytes = static_cast<size_t>(voice_config::kAudioPrebufferSamples) * sizeof(int16_t);
@@ -60,20 +58,6 @@ void codec_enable_speaker() {
                                  {0x12, 0x00}, {0x13, 0x10}, {0x32, 0xD0}, {0x37, 0x08}};
   for (const auto& setting : settings) codec_write(setting[0], setting[1]);
   gpio_set_level(static_cast<gpio_num_t>(voice_config::kAmpEnableGpio), 1);
-}
-
-void write_wav_header(uint8_t* wav, size_t data_bytes) {
-  const uint32_t rate = voice_config::kCaptureRateHz;
-  const uint32_t riff_size = static_cast<uint32_t>(36 + data_bytes);
-  const uint32_t byte_rate = rate * 2;
-  const uint16_t block_align = 2;
-  const uint16_t bits = 16;
-  memcpy(wav, "RIFF", 4); memcpy(wav + 4, &riff_size, 4); memcpy(wav + 8, "WAVEfmt ", 8);
-  const uint32_t fmt_size = 16; const uint16_t pcm = 1; const uint16_t channels = 1;
-  memcpy(wav + 16, &fmt_size, 4); memcpy(wav + 20, &pcm, 2); memcpy(wav + 22, &channels, 2);
-  memcpy(wav + 24, &rate, 4); memcpy(wav + 28, &byte_rate, 4); memcpy(wav + 32, &block_align, 2);
-  memcpy(wav + 34, &bits, 2); memcpy(wav + 36, "data", 4);
-  const uint32_t size = static_cast<uint32_t>(data_bytes); memcpy(wav + 40, &size, 4);
 }
 
 void set_rate(int rate) {
@@ -210,39 +194,39 @@ esp_err_t audio_init(void) {
   i2s_pin_config_t pins = {}; pins.mck_io_num = voice_config::kI2sMclkGpio; pins.bck_io_num = voice_config::kI2sBclkGpio;
   pins.ws_io_num = voice_config::kI2sWsGpio; pins.data_out_num = voice_config::kI2sTxGpio; pins.data_in_num = voice_config::kI2sRxGpio;
   ESP_ERROR_CHECK(i2s_set_pin(kPort, &pins));
-  s_capacity = 44 + static_cast<size_t>(voice_config::kCaptureRateHz) * voice_config::kMaxRecordSeconds * sizeof(int16_t);
-  s_wav = static_cast<uint8_t*>(heap_caps_malloc(s_capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   s_pcm_ring = static_cast<uint8_t*>(heap_caps_malloc(kRingBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   s_ring_mutex = xSemaphoreCreateMutex(); s_data_ready = xSemaphoreCreateCounting(16, 0);
   s_space_ready = xSemaphoreCreateCounting(16, 0); s_playback_done = xSemaphoreCreateBinary();
-  if (!s_wav || !s_pcm_ring || !s_ring_mutex || !s_data_ready || !s_space_ready || !s_playback_done) return ESP_ERR_NO_MEM;
+  if (!s_pcm_ring || !s_ring_mutex || !s_data_ready || !s_space_ready || !s_playback_done) return ESP_ERR_NO_MEM;
   xTaskCreate(playback_task, "luna_audio", 4096, nullptr, 7, nullptr);
-  ESP_LOGI(kTag, "codec ready; capture capacity=%u", static_cast<unsigned>(s_capacity));
+  ESP_LOGI(kTag, "codec ready; live PCM capture enabled");
   return ESP_OK;
 }
 
 esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cancelled,
                                       CaptureAudioCallback callback, void* callback_context) {
-  if (!recording || !s_wav) return ESP_ERR_INVALID_STATE;
-  *recording = {s_wav, s_capacity, 0, false, false}; codec_enable_mic(); set_rate(voice_config::kCaptureRateHz);
+  if (!recording) return ESP_ERR_INVALID_STATE;
+  *recording = {0, false, false}; codec_enable_mic(); set_rate(voice_config::kCaptureRateHz);
   size_t used = 0; int64_t energy = 0; int16_t block[voice_config::kCaptureBlockSamples];
   while (!*cancelled && gpio_get_level(static_cast<gpio_num_t>(voice_config::kButtonGpio)) == 0) {
     size_t received = 0;
     esp_err_t err = i2s_read(kPort, block, sizeof(block), &received, pdMS_TO_TICKS(150));
     if (err != ESP_OK) return err;
-    if (used + received > s_capacity - 44) { recording->truncated = true; break; }
-    memcpy(s_wav + 44 + used, block, received); used += received;
-    if (callback && !callback(s_wav + 44 + used - received, received, callback_context)) {
+    if (used + received > static_cast<size_t>(voice_config::kCaptureRateHz) *
+                              voice_config::kMaxRecordSeconds * sizeof(int16_t)) {
+      recording->truncated = true;
+      break;
+    }
+    used += received;
+    if (callback && !callback(reinterpret_cast<const uint8_t*>(block), received, callback_context)) {
       callback = nullptr;
     }
     for (size_t i = 0; i < received / sizeof(int16_t); ++i) energy += abs(block[i]);
   }
-  recording->data_bytes = used; write_wav_header(s_wav, used);
+  recording->data_bytes = used;
   const size_t samples = used / sizeof(int16_t); recording->has_speech = samples && energy / static_cast<int64_t>(samples) > 80;
   return samples >= static_cast<size_t>(voice_config::kCaptureRateHz * voice_config::kMinRecordMilliseconds / 1000) ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }
-
-void audio_reset_recording(void) {}
 
 esp_err_t audio_playback_begin(uint32_t turn_id) {
   xSemaphoreTake(s_ring_mutex, portMAX_DELAY);

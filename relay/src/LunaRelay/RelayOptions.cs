@@ -13,23 +13,32 @@ public sealed class AzureSpeechOptions
 {
     public string Key { get; init; } = string.Empty;
     public string Region { get; init; } = string.Empty;
-    public string Language { get; init; } = "en-IN";
-    public string Voice { get; init; } = "en-IN-NeerjaNeural";
+    public string DefaultServiceVoice { get; init; } = "en-IN-NeerjaNeural";
 }
 
 public sealed class AzureOpenAiOptions
 {
     public string Endpoint { get; init; } = string.Empty;
     public string ApiKey { get; init; } = string.Empty;
-    public string Model { get; init; } = string.Empty;
+    public string Model { get; init; } = "DeepSeek-V4-Flash";
+}
+
+public sealed class FirestoreOptions
+{
+    public string ProjectId { get; init; } = string.Empty;
+    public string ConversationCollection { get; init; } = "luna_agent_sessions";
 }
 
 public sealed record RelayConfiguration(
     RelayOptions Relay,
     AzureSpeechOptions AzureSpeech,
-    AzureOpenAiOptions AzureOpenAI)
+    AzureOpenAiOptions AzureOpenAI,
+    FirestoreOptions Firestore,
+    AssistantOptions Assistant)
 {
-    public void Validate()
+    public AssistantProfile DefaultAssistantProfile => AssistantProfile.FromOptions(Assistant.DefaultProfile);
+
+    public void Validate(VoiceCatalog voices, ToolRegistry tools)
     {
         Require(Relay.DeviceToken, "Relay:DeviceToken");
         if (Relay.UseTls)
@@ -39,14 +48,47 @@ public sealed record RelayConfiguration(
         }
         Require(AzureSpeech.Key, "AzureSpeech:Key");
         Require(AzureSpeech.Region, "AzureSpeech:Region");
-        Require(AzureSpeech.Language, "AzureSpeech:Language");
-        Require(AzureSpeech.Voice, "AzureSpeech:Voice");
+        Require(AzureSpeech.DefaultServiceVoice, "AzureSpeech:DefaultServiceVoice");
         Require(AzureOpenAI.Endpoint, "AzureOpenAI:Endpoint");
         Require(AzureOpenAI.ApiKey, "AzureOpenAI:ApiKey");
         Require(AzureOpenAI.Model, "AzureOpenAI:Model");
+        Require(Firestore.ConversationCollection, "Firestore:ConversationCollection");
         if (!Uri.TryCreate(AzureOpenAI.Endpoint, UriKind.Absolute, out _))
         {
             throw new InvalidOperationException("AzureOpenAI:Endpoint must be an absolute URL.");
+        }
+        AssistantProfile profile = DefaultAssistantProfile;
+        Require(profile.Id, "Assistant:DefaultProfile:Id");
+        Require(profile.RecognitionLanguage, "Assistant:DefaultProfile:RecognitionLanguage");
+        if (!voices.TryGet(profile.DefaultVoiceId, out _))
+        {
+            throw new InvalidOperationException("Assistant:DefaultProfile:DefaultVoiceId is unknown.");
+        }
+        if (profile.Memory.WindowMinutes < 30)
+        {
+            throw new InvalidOperationException("Assistant:DefaultProfile:Memory:WindowMinutes must be at least 30.");
+        }
+        if (profile.Memory.MaximumHistoryTurns is < 1 or > 50)
+        {
+            throw new InvalidOperationException("Assistant:DefaultProfile:Memory:MaximumHistoryTurns must be between 1 and 50.");
+        }
+        if (profile.Memory.MaximumArchivedConversations is < 1 or > 10)
+        {
+            throw new InvalidOperationException(
+                "Assistant:DefaultProfile:Memory:MaximumArchivedConversations must be between 1 and 10.");
+        }
+        if (Assistant.DefaultProfile.Tools.EnabledToolIds.Distinct(StringComparer.Ordinal).Count() !=
+            Assistant.DefaultProfile.Tools.EnabledToolIds.Length)
+        {
+            throw new InvalidOperationException("Assistant:DefaultProfile:Tools contains duplicate tool IDs.");
+        }
+        foreach (string toolId in profile.Tools.EnabledToolIds)
+        {
+            if (!tools.Contains(toolId))
+            {
+                throw new InvalidOperationException(
+                    $"Assistant:DefaultProfile:Tools enables unregistered tool '{toolId}'.");
+            }
         }
     }
 

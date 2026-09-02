@@ -62,61 +62,6 @@ public sealed class RelayProtocolTests
     }
 
     [Fact]
-    public void ResponsesSseTerminalEventHeaderCompletesWithoutParsingPayload()
-    {
-        var parser = new ResponsesSseParser();
-
-        Assert.Equal(ResponsesSseEventKind.None,
-            parser.ProcessLine("event: response.completed").Kind);
-        Assert.Equal(ResponsesSseEventKind.None,
-            parser.ProcessLine("data: {\"large_terminal_payload\":true}").Kind);
-
-        ResponsesSseEvent terminal = parser.ProcessLine(string.Empty);
-
-        Assert.Equal(ResponsesSseEventKind.Completed, terminal.Kind);
-    }
-
-    [Theory]
-    [InlineData("data: [DONE]", ResponsesSseEventKind.Completed)]
-    [InlineData("event: response.failed", ResponsesSseEventKind.Failed)]
-    [InlineData("event: error", ResponsesSseEventKind.Failed)]
-    public void ResponsesSseRecognizesTerminalSignals(
-        string firstLine, ResponsesSseEventKind expected)
-    {
-        var parser = new ResponsesSseParser();
-
-        parser.ProcessLine(firstLine);
-
-        Assert.Equal(expected, parser.ProcessLine(string.Empty).Kind);
-    }
-
-    [Fact]
-    public void ResponsesSseReturnsTextDeltaAtEventBoundary()
-    {
-        var parser = new ResponsesSseParser();
-
-        parser.ProcessLine("event: response.output_text.delta");
-        parser.ProcessLine("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}");
-
-        ResponsesSseEvent delta = parser.ProcessLine(string.Empty);
-
-        Assert.Equal(ResponsesSseEventKind.TextDelta, delta.Kind);
-        Assert.Equal("Hello", delta.Text);
-    }
-
-    [Fact]
-    public void ResponsesSseRemembersThatTextWasReceived()
-    {
-        var parser = new ResponsesSseParser();
-
-        parser.ProcessLine("event: response.output_text.delta");
-        parser.ProcessLine("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}");
-        parser.ProcessLine(string.Empty);
-
-        Assert.True(parser.SawTextDelta);
-    }
-
-    [Fact]
     public void TtsAudioBacklogIsByteBoundedWithoutDroppingQueuedAudio()
     {
         var backlog = new TtsAudioBacklog(100);
@@ -159,9 +104,16 @@ public sealed class RelayProtocolTests
     {
         var configuration = new RelayConfiguration(
             new RelayOptions { ListenPort = 8080, UseTls = false, DeviceToken = "device-token" },
-            new AzureSpeechOptions { Key = "speech-key", Region = "eastus", Language = "en-IN", Voice = "en-IN-NeerjaNeural" },
-            new AzureOpenAiOptions { Endpoint = "https://example.test/openai/v1/responses", ApiKey = "openai-key", Model = "model" });
+            new AzureSpeechOptions { Key = "speech-key", Region = "eastus", DefaultServiceVoice = "en-IN-NeerjaNeural" },
+            new AzureOpenAiOptions
+            {
+                Endpoint = "https://example.test/openai/v1/chat/completions",
+                ApiKey = "agent-key",
+                Model = "DeepSeek-V4-Flash",
+            },
+            new FirestoreOptions { ConversationCollection = "luna_agent_sessions" },
+            new AssistantOptions());
 
-        configuration.Validate();
+        configuration.Validate(VoiceCatalog.Create("en-IN-NeerjaNeural"), ToolRegistry.Empty);
     }
 }

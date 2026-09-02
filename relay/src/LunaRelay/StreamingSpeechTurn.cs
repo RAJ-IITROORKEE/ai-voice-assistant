@@ -17,10 +17,11 @@ public sealed class StreamingSpeechTurn : IAsyncDisposable
     private Exception? _error;
     private bool _closed;
 
-    public StreamingSpeechTurn(AzureSpeechOptions options, Action<string> onPartial)
+    public StreamingSpeechTurn(
+        AzureSpeechOptions options, string recognitionLanguage, Action<string> onPartial)
     {
         SpeechConfig config = SpeechConfig.FromSubscription(options.Key, options.Region);
-        config.SpeechRecognitionLanguage = options.Language;
+        config.SpeechRecognitionLanguage = recognitionLanguage;
         _format = AudioStreamFormat.GetWaveFormatPCM(16_000, 16, 1);
         _input = AudioInputStream.CreatePushStream(_format);
         _audioConfig = AudioConfig.FromStreamInput(_input);

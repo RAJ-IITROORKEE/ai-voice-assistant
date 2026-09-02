@@ -20,6 +20,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_transport_ws.h"
 #include "esp_websocket_client.h"
@@ -32,7 +33,7 @@
 #include "freertos/task.h"
 #include "lwip/ip4_addr.h"
 
-// Local development embeds its generated CA. Public Container Apps use the IDF CA bundle.
+// Local development embeds its generated CA. Public Cloud Run uses the IDF CA bundle.
 #if !defined(LUNA_RELAY_USE_PUBLIC_CA)
 extern const uint8_t relay_ca_start[] asm("_binary_relay_ca_pem_start");
 #endif
@@ -429,8 +430,14 @@ esp_err_t relay_init(void) {
   config.keep_alive_count = 3;
   s_client = esp_websocket_client_init(&config);
   if (!s_client) return ESP_ERR_NO_MEM;
+  uint8_t mac[6] = {};
+  ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
+  char device_id[sizeof("esp32-000000000000")] = {};
+  snprintf(device_id, sizeof(device_id), "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1],
+           mac[2], mac[3], mac[4], mac[5]);
   ESP_ERROR_CHECK(esp_websocket_client_append_header(s_client, "X-Device-Token",
-                                                       LUNA_RELAY_DEVICE_TOKEN));
+                                                        LUNA_RELAY_DEVICE_TOKEN));
+  ESP_ERROR_CHECK(esp_websocket_client_append_header(s_client, "X-Device-Id", device_id));
   ESP_ERROR_CHECK(esp_websocket_register_events(s_client, WEBSOCKET_EVENT_ANY, websocket_event, nullptr));
   ESP_ERROR_CHECK(esp_websocket_client_start(s_client));
   xTaskCreate(uplink_task, "luna_uplink", 4096, nullptr, 6, nullptr);

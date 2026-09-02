@@ -2,10 +2,17 @@ param(
     [string]$Region = 'us-east4',
     [string]$ServiceName = 'luna-relay',
     [string]$RepositoryName = 'luna-relay',
-    [string]$ServiceAccountName = 'luna-relay-runtime'
+    [string]$ServiceAccountName = 'luna-relay-runtime',
+    [int]$MinInstances = 1,
+    [int]$MaxInstances = 3,
+    [int]$Concurrency = 1
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($MinInstances -lt 0 -or $MaxInstances -lt 1 -or $MinInstances -gt $MaxInstances -or $Concurrency -lt 1) {
+    throw 'MinInstances must be non-negative, MaxInstances and Concurrency must be positive, and MinInstances cannot exceed MaxInstances.'
+}
 
 function Invoke-Gcloud {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
@@ -35,9 +42,11 @@ function Set-RelaySecret {
 
     if (-not (Test-GcloudResource secrets describe $Name --quiet)) {
         Invoke-Gcloud secrets create $Name --replication-policy automatic --quiet | Out-Null
-        Invoke-Gcloud secrets add-iam-policy-binding $Name --member "serviceAccount:$RuntimeServiceAccount" `
-            --role roles/secretmanager.secretAccessor --quiet | Out-Null
     }
+    # Reapply access on every deployment so an existing secret remains readable
+    # if the runtime service account or its IAM policy was changed.
+    Invoke-Gcloud secrets add-iam-policy-binding $Name --member "serviceAccount:$RuntimeServiceAccount" `
+        --role roles/secretmanager.secretAccessor --quiet | Out-Null
 
     $temporaryPath = Join-Path ([IO.Path]::GetTempPath()) ("luna-relay-$Name-" + [guid]::NewGuid().ToString('N'))
     try {
@@ -59,6 +68,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $settingsPath = Join-Path $root 'relay\appsettings.Local.json'
 $firmwareConfigPath = Join-Path $root 'main\relay_config.h'
 $statePath = Join-Path $root 'relay\.gcloud-deployment.json'
+$memoryCollection = 'luna_agent_sessions'
 
 if (-not (Test-Path -LiteralPath $settingsPath) -or -not (Test-Path -LiteralPath $firmwareConfigPath)) {
     throw 'Generate ignored local relay settings before deployment.'
@@ -88,7 +98,8 @@ if (Test-Path -LiteralPath $statePath) {
     $ServiceAccountName = ($existingState.RuntimeServiceAccount -split '@')[0]
 }
 
-Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com --quiet | Out-Null
+Invoke-Gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com `
+    secretmanager.googleapis.com firestore.googleapis.com --quiet | Out-Null
 
 if (-not (Test-GcloudResource artifacts repositories describe $RepositoryName --location $Region --quiet)) {
     Invoke-Gcloud artifacts repositories create $RepositoryName --repository-format docker --location $Region --quiet | Out-Null
@@ -108,11 +119,20 @@ Invoke-Gcloud projects add-iam-policy-binding $projectId --member "serviceAccoun
 Invoke-Gcloud artifacts repositories add-iam-policy-binding $RepositoryName --location $Region `
     --member "serviceAccount:$buildServiceAccount" --role roles/artifactregistry.writer --quiet | Out-Null
 
+Invoke-Gcloud projects add-iam-policy-binding $projectId --member "serviceAccount:$runtimeServiceAccount" `
+    --role roles/datastore.user --quiet | Out-Null
+
+if (-not (Test-GcloudResource firestore databases describe --database '(default)' --quiet)) {
+    Invoke-Gcloud firestore databases create --database '(default)' --location $Region --type firestore-native --quiet | Out-Null
+}
+Invoke-Gcloud firestore fields ttls update expires_at --collection-group $memoryCollection `
+    --database '(default)' --enable-ttl --quiet | Out-Null
+
 Set-RelaySecret -Name 'luna-relay-device-token' -Value $tokenMatch.Groups['token'].Value -RuntimeServiceAccount $runtimeServiceAccount
 Set-RelaySecret -Name 'luna-relay-speech-key' -Value $settings.AzureSpeech.Key -RuntimeServiceAccount $runtimeServiceAccount
 Set-RelaySecret -Name 'luna-relay-openai-key' -Value $settings.AzureOpenAI.ApiKey -RuntimeServiceAccount $runtimeServiceAccount
 
-$image = "$Region-docker.pkg.dev/$projectId/$RepositoryName/luna-relay:v1"
+$image = "$Region-docker.pkg.dev/$projectId/$RepositoryName/luna-relay:v2"
 Invoke-Gcloud builds submit --config cloudbuild.yaml --substitutions "_IMAGE=$image" --quiet | Out-Null
 
 $environment = @(
@@ -120,10 +140,17 @@ $environment = @(
     'Relay__ListenPort=8080',
     'Relay__UseTls=false',
     "AzureSpeech__Region=$($settings.AzureSpeech.Region)",
-    "AzureSpeech__Language=$($settings.AzureSpeech.Language)",
-    "AzureSpeech__Voice=$($settings.AzureSpeech.Voice)",
+    "AzureSpeech__DefaultServiceVoice=$($settings.AzureSpeech.DefaultServiceVoice)",
     "AzureOpenAI__Endpoint=$($settings.AzureOpenAI.Endpoint)",
-    "AzureOpenAI__Model=$($settings.AzureOpenAI.Model)"
+    "AzureOpenAI__Model=$($settings.AzureOpenAI.Model)",
+    "Firestore__ProjectId=$projectId",
+    "Firestore__ConversationCollection=$memoryCollection",
+    "Assistant__DefaultProfile__RecognitionLanguage=$($settings.Assistant.DefaultProfile.RecognitionLanguage)",
+    "Assistant__DefaultProfile__DefaultVoiceId=$($settings.Assistant.DefaultProfile.DefaultVoiceId)",
+    'Assistant__DefaultProfile__Memory__WindowMinutes=10080',
+    'Assistant__DefaultProfile__Memory__MaximumHistoryTurns=20',
+    'Assistant__DefaultProfile__Memory__MaximumArchivedConversations=5',
+    'Assistant__DefaultProfile__Tools__RequireConfirmationForWrites=true'
 )
 $secretBindings = @(
     'Relay__DeviceToken=luna-relay-device-token:latest',
@@ -133,10 +160,10 @@ $secretBindings = @(
 $environmentFlag = $environment -join ','
 $secretBindingsFlag = $secretBindings -join ','
 
- # One slot is retained for the persistent device socket; another lets a reconnect
- # or health check proceed while the prior socket is closing.
-Invoke-Gcloud run deploy $ServiceName --image $image --region $Region --platform managed --allow-unauthenticated `
-    --service-account $runtimeServiceAccount --port 8080 --min-instances 1 --max-instances 1 --concurrency 2 `
+ # A voice WebSocket holds provider resources for a whole turn, so each instance
+ # accepts one concurrent session. Scale with bounded replica count instead.
+ Invoke-Gcloud run deploy $ServiceName --image $image --region $Region --platform managed --allow-unauthenticated `
+    --service-account $runtimeServiceAccount --port 8080 --min-instances $MinInstances --max-instances $MaxInstances --concurrency $Concurrency `
     --cpu 1 --memory 1Gi --no-cpu-throttling --timeout 3600 --set-env-vars $environmentFlag --set-secrets $secretBindingsFlag --quiet | Out-Null
 
 $serviceUrl = (Invoke-Gcloud run services describe $ServiceName --region $Region --format 'value(status.url)' --quiet).Trim()

@@ -32,6 +32,8 @@ string ttsEndpoint = Required("AZURE_TTS_ENDPOINT");
 string speechRegion = new Uri(ttsEndpoint).Host.Split('.')[0];
 string token = Base64Url(RandomNumberGenerator.GetBytes(32));
 string certificatePassword = Base64Url(RandomNumberGenerator.GetBytes(24));
+string firestoreProject = args.Skip(1).FirstOrDefault() ??
+    Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT") ?? string.Empty;
 
 string relayDirectory = Path.Combine(root, "relay");
 string certificateDirectory = Path.Combine(relayDirectory, "certs");
@@ -73,14 +75,34 @@ var settings = new
     {
         Key = Required("AZURE_SPEECH_KEY"),
         Region = speechRegion,
-        Language = values.GetValueOrDefault("SPEECH_LANGUAGE", "en-IN"),
-        Voice = values.GetValueOrDefault("TTS_VOICE_ENGLISH", "en-IN-NeerjaNeural"),
+        DefaultServiceVoice = values.GetValueOrDefault("TTS_VOICE_ENGLISH", "en-IN-NeerjaNeural"),
     },
     AzureOpenAI = new
     {
         Endpoint = Required("AZURE_AI_ENDPOINT"),
         ApiKey = Required("AZURE_AI_API_KEY"),
         Model = Required("AZURE_AI_MODEL"),
+    },
+    Firestore = new
+    {
+        ProjectId = firestoreProject,
+        ConversationCollection = "luna_agent_sessions",
+    },
+    Assistant = new
+    {
+        DefaultProfile = new
+        {
+            Id = "default",
+            RecognitionLanguage = values.GetValueOrDefault("SPEECH_LANGUAGE", "en-IN"),
+            DefaultVoiceId = "Default",
+            Memory = new
+            {
+                WindowMinutes = 7 * 24 * 60,
+                MaximumHistoryTurns = 20,
+                MaximumArchivedConversations = 5,
+            },
+            Tools = new { EnabledToolIds = Array.Empty<string>(), RequireConfirmationForWrites = true },
+        },
     },
 };
 File.WriteAllText(Path.Combine(relayDirectory, "appsettings.Local.json"),

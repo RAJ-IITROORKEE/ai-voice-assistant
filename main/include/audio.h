@@ -7,26 +7,22 @@
 #include "esp_err.h"
 
 struct Recording {
-  uint8_t* wav;
-  size_t capacity_bytes;
   size_t data_bytes;
   bool truncated;
   bool has_speech;
 };
 
-// Called after each complete 20 ms capture block has been copied into PSRAM.
-// Returning false stops live forwarding but never discards the local recording.
+// Called with each complete 20 ms PCM capture block for immediate relay forwarding.
+// Returning false stops forwarding while capture continues for speech validation.
 using CaptureAudioCallback = bool (*)(const uint8_t* pcm, size_t len, void* context);
 
-// Initializes the ES8311/I2S hardware, PSRAM capture buffer, and playback task.
+// Initializes the ES8311/I2S hardware and PSRAM playback ring.
 esp_err_t audio_init(void);
 
-// Captures 16-bit mono PCM until the active-low button is released or 60 s elapse.
-// The returned WAV pointer remains valid until audio_reset_recording is called.
+// Captures and forwards 16-bit mono PCM until button release or the configured limit.
 esp_err_t audio_capture_while_pressed(Recording* recording, volatile bool* cancelled,
                                       CaptureAudioCallback callback = nullptr,
                                       void* callback_context = nullptr);
-void audio_reset_recording(void);
 
 // TTS stream producer API. HTTP callbacks enqueue arbitrary byte boundaries;
 // a dedicated task feeds I2S after a PSRAM prebuffer is available.

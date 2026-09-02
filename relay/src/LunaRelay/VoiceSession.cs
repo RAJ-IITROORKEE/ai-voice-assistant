@@ -6,8 +6,11 @@ namespace LunaRelay;
 
 public sealed class VoiceSession(
     WebSocket socket,
+    AssistantContext context,
     RelayConfiguration configuration,
-    AzureResponsesClient responses,
+    IAgentResponder agentResponder,
+    IConversationStore memory,
+    VoiceCatalog voices,
     StreamingTts tts,
     ILogger<VoiceSession> logger) : IAsyncDisposable
 {
@@ -89,7 +92,8 @@ public sealed class VoiceSession(
     {
         await CancelActiveTurnAsync();
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(sessionToken);
-        var speech = new StreamingSpeechTurn(configuration.AzureSpeech, partial =>
+        var speech = new StreamingSpeechTurn(
+            configuration.AzureSpeech, context.Profile.RecognitionLanguage, partial =>
         {
             _ = SendControlAsync(new ControlMessage
             {
@@ -162,6 +166,65 @@ public sealed class VoiceSession(
             logger.LogInformation("Turn {TurnId} STT final in {ElapsedMs} ms", turn.TurnId,
                 Environment.TickCount64 - started);
 
+            VoiceCommand? voiceCommand = VoiceCommands.TryParse(transcript, voices, out VoiceCommand parsed)
+                ? parsed
+                : null;
+            VoiceProfile selectedVoice;
+            string commandResponse = voiceCommand?.Response ?? string.Empty;
+            if (voiceCommand?.Kind == VoiceCommandKind.Change)
+            {
+                selectedVoice = voiceCommand.Voice!;
+                try
+                {
+                    bool saved = await memory.SaveVoiceAsync(
+                        context.Conversation,
+                        context.Profile.Memory,
+                        selectedVoice.Name,
+                        turn.StartedAt,
+                        turn.Cancellation.Token);
+                    if (!saved)
+                    {
+                        selectedVoice = voices.Resolve(
+                            await memory.LoadVoiceAsync(
+                                context.Conversation, context.Profile.Memory, turn.Cancellation.Token) ??
+                            context.Profile.DefaultVoiceId);
+                        commandResponse = $"Voice is already set to {selectedVoice.Name}.";
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception,
+                        "Could not persist voice preference for conversation {Conversation}; using it for this turn",
+                        context.Conversation.StorageKey);
+                }
+            }
+            else
+            {
+                try
+                {
+                    selectedVoice = voices.Resolve(
+                        await memory.LoadVoiceAsync(
+                            context.Conversation, context.Profile.Memory, turn.Cancellation.Token) ??
+                        context.Profile.DefaultVoiceId);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    logger.LogWarning(exception,
+                        "Could not load voice preference for conversation {Conversation}; using default",
+                        context.Conversation.StorageKey);
+                    selectedVoice = voices.Resolve(context.Profile.DefaultVoiceId);
+                }
+            }
+            logger.LogInformation("Turn {TurnId} using voice {VoiceName}", turn.TurnId, selectedVoice.Name);
+
             lock (_turnGate)
             {
                 _speakerSequence = 0;
@@ -172,7 +235,19 @@ public sealed class VoiceSession(
 
             async IAsyncEnumerable<string> TextChunks()
             {
-                await foreach (string delta in responses.StreamTextAsync(transcript, turn.Cancellation.Token))
+                if (voiceCommand is not null)
+                {
+                    await SendControlAsync(new ControlMessage
+                    {
+                        Type = "response.delta",
+                        TurnId = turn.TurnId,
+                        Text = commandResponse,
+                    }, turn.Cancellation.Token);
+                    yield return commandResponse;
+                    yield break;
+                }
+                await foreach (string delta in agentResponder.StreamTextAsync(
+                                    new AssistantTurn(context, transcript), turn.Cancellation.Token))
                 {
                     await SendControlAsync(new ControlMessage
                     {
@@ -184,7 +259,8 @@ public sealed class VoiceSession(
                 }
             }
 
-            await tts.SynthesizeAsync(TextChunks(), async (pcm, cancellationToken) =>
+            await tts.SynthesizeAsync(TextChunks(), selectedVoice.ServiceName,
+                async (pcm, cancellationToken) =>
             {
                 for (int offset = 0; offset < pcm.Length; offset += DevicePcmFrameBytes)
                 {
@@ -347,6 +423,7 @@ public sealed class VoiceSession(
         public uint TurnId { get; } = turnId;
         public StreamingSpeechTurn Speech { get; } = speech;
         public CancellationTokenSource Cancellation { get; } = cancellation;
+        public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
         public uint NextMicrophoneSequence { get; set; }
         public bool Committed { get; set; }
 

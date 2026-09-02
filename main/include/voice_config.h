@@ -17,18 +17,8 @@
 #ifndef SPEECH_LANGUAGE
 #define SPEECH_LANGUAGE "en-IN"
 #endif
-#ifndef FALLBACK_SPEECH_LANGUAGE
-#define FALLBACK_SPEECH_LANGUAGE SPEECH_LANGUAGE
-#endif
 #ifndef TTS_VOICE_ENGLISH
-#ifdef TTS_VOICE
-#define TTS_VOICE_ENGLISH TTS_VOICE
-#else
 #define TTS_VOICE_ENGLISH "en-IN-NeerjaNeural"
-#endif
-#endif
-#ifndef TTS_VOICE_HINDI
-#define TTS_VOICE_HINDI "hi-IN-SwaraNeural"
 #endif
 
 namespace voice_config {

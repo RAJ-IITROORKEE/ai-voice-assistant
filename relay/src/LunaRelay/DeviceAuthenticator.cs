@@ -3,18 +3,29 @@ using System.Text;
 
 namespace LunaRelay;
 
-public static class DeviceAuthenticator
+public interface IDeviceAuthenticator
 {
-    public static bool IsAuthorized(string? presentedToken, string expectedToken)
+    AccessPrincipal? Authenticate(string? presentedToken);
+}
+
+public sealed class StaticDeviceTokenAuthenticator(string expectedToken) : IDeviceAuthenticator
+{
+    public AccessPrincipal? Authenticate(string? presentedToken)
     {
         if (string.IsNullOrEmpty(presentedToken) || string.IsNullOrEmpty(expectedToken))
         {
-            return false;
+            return null;
         }
 
         byte[] presented = Encoding.UTF8.GetBytes(presentedToken);
         byte[] expected = Encoding.UTF8.GetBytes(expectedToken);
-        return presented.Length == expected.Length &&
-               CryptographicOperations.FixedTimeEquals(presented, expected);
+        if (presented.Length != expected.Length ||
+            !CryptographicOperations.FixedTimeEquals(presented, expected))
+        {
+            return null;
+        }
+
+        return new AccessPrincipal(
+            AssistantActorKind.Device, CredentialIdentity.FromToken(expectedToken), null);
     }
 }

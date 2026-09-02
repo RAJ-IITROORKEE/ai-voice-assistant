@@ -12,13 +12,14 @@ public sealed class StreamingTts(
 
     public async Task SynthesizeAsync(
         IAsyncEnumerable<string> textChunks,
+        string voice,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> onPcm,
         CancellationToken cancellationToken)
     {
         string endpoint = $"wss://{options.Region}.tts.speech.microsoft.com/cognitiveservices/websocket/v2";
         SpeechConfig config = SpeechConfig.FromEndpoint(new Uri(endpoint), options.Key);
         config.SetSpeechSynthesisOutputFormat(SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm);
-        config.SetProperty(PropertyId.SpeechServiceConnection_SynthVoice, options.Voice);
+        config.SetProperty(PropertyId.SpeechServiceConnection_SynthVoice, voice);
         using var synthesizer = new SpeechSynthesizer(config, audioConfig: null);
         using var request = new SpeechSynthesisRequest(SpeechSynthesisRequestInputType.TextStream);
         var audio = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions

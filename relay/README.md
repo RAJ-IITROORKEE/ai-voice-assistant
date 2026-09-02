@@ -1,8 +1,10 @@
 # Luna Relay
 
-The relay keeps Azure credentials off the ESP32 and provides one authenticated,
-persistent WebSocket for microphone audio, cancellation, streamed model output,
-and raw speaker PCM.
+The .NET 8 relay keeps provider credentials off the ESP32 and provides the
+authenticated WSS voice pipeline: Azure Speech STT/TTS, one OpenAI-compatible
+chat completion, and bounded Firestore conversation state. The active protocol
+and deployment architecture are documented in [`../ARCHITECTURE.md`](../ARCHITECTURE.md).
+Product behavior and safe extension rules are in [`../ASSISTANT.md`](../ASSISTANT.md).
 
 ## Local Setup
 
@@ -14,6 +16,9 @@ dotnet run --project relay/tools/LunaRelay.Setup -- .
 .\relay\Run-LunaRelay.ps1
 ```
 
+Optionally add the Firestore project ID as the final setup argument. Otherwise the
+Google client discovers it from the local application-default credentials.
+
 `Run-LunaRelay.ps1` runs the relay in the current terminal. It checks that the
 ignored local settings exist, builds the project when needed, then keeps the
 authenticated HTTPS/WSS server running until you press `Ctrl+C`.
@@ -21,30 +26,6 @@ authenticated HTTPS/WSS server running until you press `Ctrl+C`.
 The relay listens on HTTPS/WSS port 7443. Windows Firewall must permit inbound TCP
 7443 on the private network. Do not commit `appsettings.Local.json`, the PFX file,
 or `main/relay_config.h`.
-
-## Azure Container Apps
-
-Use the cloud relay when the access point blocks device-to-device traffic. The
-deployment keeps Azure credentials as Container App secrets and uses Azure-managed
-public TLS, so the firmware trusts the normal ESP-IDF certificate bundle rather than
-a locally generated certificate.
-
-1. Authenticate interactively with `az login`.
-2. Run the deployment from the repository root:
-
-```powershell
-.\relay\Deploy-LunaRelayContainerApp.ps1
-```
-
-The script creates a Basic Azure Container Registry, a managed identity with only
-`AcrPull`, a Container Apps environment, and one warm external relay replica in East
-US. It reads ignored local settings only in memory, writes secrets directly to Azure,
-then rewrites the ignored device relay configuration with the public WSS endpoint.
-It writes ignored deployment state to prevent accidental duplicate charged resources.
-
-After deployment, rebuild and flash the firmware. The active Container App endpoint
-is `wss://<public-fqdn>/voice`; do not put a custom certificate or Azure key on the
-device.
 
 ## Google Cloud Run
 
@@ -59,16 +40,18 @@ gcloud auth login
 gcloud config set project PROJECT_ID
 ```
 
-2. Deploy one warm relay in `us-east4`:
+2. Deploy the relay in `us-east4`:
 
 ```powershell
 .\relay\Deploy-LunaRelayCloudRun.ps1
 ```
 
-The script enables only Cloud Run, Cloud Build, Artifact Registry, and Secret
-Manager APIs. It creates a private Docker repository and a runtime service account
-that may read only this relay's three secrets. The Cloud Run service allows one
-concurrent persistent voice session and retains one warm instance for latency.
+The script enables Cloud Run, Cloud Build, Artifact Registry, Secret Manager, and
+Firestore. It creates a private Docker repository and a runtime service account with
+Firestore data access and access to the device-token, Speech, and Azure AI Foundry
+secrets. It defaults to one warm instance, a maximum of three instances, and
+concurrency one for persistent voice sessions. Use deployment parameters to tune
+those limits after load testing.
 It then writes the ignored firmware relay endpoint using the public Google-managed
 certificate. Build and flash the firmware after the script completes.
 
