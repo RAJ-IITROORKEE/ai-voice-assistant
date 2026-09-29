@@ -4,6 +4,7 @@
     <PackageReference Include="Azure.Identity" Version="1.13.2" />
     <PackageReference Include="Google.Cloud.Firestore" Version="3.11.0" />
     <PackageReference Include="Microsoft.CognitiveServices.Speech" Version="1.51.2" />
+    <PackageReference Include="Npgsql" Version="8.0.5" />
     <ProjectReference Include="..\LunaRelay.Protocol\LunaRelay.Protocol.csproj" />
   </ItemGroup>
 </Project>

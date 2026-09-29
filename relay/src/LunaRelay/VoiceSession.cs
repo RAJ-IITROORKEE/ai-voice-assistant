@@ -12,7 +12,8 @@ public sealed class VoiceSession(
     IConversationStore memory,
     VoiceCatalog voices,
     StreamingTts tts,
-    ILogger<VoiceSession> logger) : IAsyncDisposable
+    ILogger<VoiceSession> logger,
+    InsForgeStore? insforge = null) : IAsyncDisposable
 {
     private const int DevicePcmFrameBytes = 960;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -166,6 +167,21 @@ public sealed class VoiceSession(
             logger.LogInformation("Turn {TurnId} STT final in {ElapsedMs} ms", turn.TurnId,
                 Environment.TickCount64 - started);
 
+            // Phase 3: per-user settings from InsForge Postgres override relay defaults each turn.
+            DeviceSettings? syncSettings = null;
+            if (insforge is not null && Guid.TryParse(context.OwnerId, out _))
+            {
+                try
+                {
+                    syncSettings = await insforge.LoadSettingsAsync(
+                        context.OwnerId, turn.Cancellation.Token);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogDebug(exception, "Could not load settings for owner {OwnerId}", context.OwnerId);
+                }
+            }
+
             VoiceCommand? voiceCommand = VoiceCommands.TryParse(transcript, voices, out VoiceCommand parsed)
                 ? parsed
                 : null;
@@ -222,6 +238,12 @@ public sealed class VoiceSession(
                         context.Conversation.StorageKey);
                     selectedVoice = voices.Resolve(context.Profile.DefaultVoiceId);
                 }
+            }
+            // Settings from the web app (Postgres) take precedence over stored voice memory when set.
+            if (voiceCommand?.Kind != VoiceCommandKind.Change &&
+                !string.IsNullOrWhiteSpace(syncSettings?.Voice))
+            {
+                selectedVoice = ResolveSettingsVoice(syncSettings.Voice, selectedVoice);
             }
             logger.LogInformation("Turn {TurnId} using voice {VoiceName}", turn.TurnId, selectedVoice.Name);
 
@@ -311,6 +333,21 @@ public sealed class VoiceSession(
             }
             await turn.DisposeAsync();
         }
+    }
+
+    private VoiceProfile ResolveSettingsVoice(string settingsVoice, VoiceProfile fallback)
+    {
+        // Friendly name (Default/Ava/Andrew/Brian) resolves via the catalog.
+        if (voices.TryGet(settingsVoice, out VoiceProfile named))
+        {
+            return named;
+        }
+        // Raw Azure service voice name (e.g. en-IN-NeerjaNeural) — use directly.
+        if (settingsVoice.Contains('-', StringComparison.Ordinal))
+        {
+            return new VoiceProfile(settingsVoice, settingsVoice, "unknown");
+        }
+        return fallback;
     }
 
     private async Task CancelActiveTurnAsync(uint? expectedTurnId = null)

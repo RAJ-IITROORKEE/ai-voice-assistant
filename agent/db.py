@@ -43,7 +43,9 @@ def _thread_uuid(user_sub: str, thread_id: Optional[str]) -> uuid.UUID:
         return uuid.uuid5(uuid.NAMESPACE_URL, f"thread:{user_sub}:{tid}")
 
 
-async def get_or_create_conversation(user_sub: str, thread_id: Optional[str]) -> str:
+async def get_or_create_conversation(
+    user_sub: str, thread_id: Optional[str], source: str = "web"
+) -> str:
     thread_uuid = _thread_uuid(user_sub, thread_id)
     pool = await get_pool()
     async with pool.connection() as conn:
@@ -53,10 +55,10 @@ async def get_or_create_conversation(user_sub: str, thread_id: Optional[str]) ->
         await conn.execute(
             """
             INSERT INTO conversations (id, user_id, title, source)
-            VALUES (%s, %s, %s, 'web')
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
             """,
-            (str(thread_uuid), user_sub, "New chat"),
+            (str(thread_uuid), user_sub, "New chat", source),
         )
     return str(thread_uuid)
 

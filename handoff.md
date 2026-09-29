@@ -3,8 +3,8 @@
 > Updated at the end of every work session. Read this first when resuming.
 
 **Last updated:** 2026-09-29
-**Current phase:** Phase 2 ✅ done → Phase 3 next (Relay ↔ agent integration + full sync)
-**Next action:** Wire the .NET relay to call `luna-agent` for the LLM step so device voice turns persist to Postgres and appear live in the web app. See `docs/phases/phase-2.md` for Phase 2 report.
+**Current phase:** Phase 3 ✅ done → Phase 4 next (Speech pipelines: realtime S2S)
+**Next action:** Add `IVoicePipeline` abstraction to the relay; implement Azure Realtime + Gemini Live alongside Classic; per-turn latency instrumentation; settings-driven pipeline/model/language on device. See `docs/phases/phase-3.md` for the Phase 3 report.
 
 ---
 
@@ -14,8 +14,8 @@
 |---|---|---|---|---|
 | 0 | Baseline commit & hygiene | ✅ done | committed `d280545`, tagged | `v1.0-azure-baseline` |
 | 1 | Web app MVP (Vercel) | ✅ gate passed | https://luna-voice-agent.vercel.app — auth+DB+RLS live, chat streams, deployed | `v1.1` |
-| 2 | LangGraph agent service (ACA) | ✅ gate passed | https://luna-agent.gentlecoast-5d201a63.centralindia.azurecontainerapps.io — OpenAI-compat SSE, JWT auth, Postgres memory; web app proxies to it | `v1.2` (pending commit) |
-| 3 | Relay↔agent sync + conversations | ⬜ not started | — | `v1.3` |
+| 2 | LangGraph agent service (ACA) | ✅ gate passed | https://luna-agent.gentlecoast-5d201a63.centralindia.azurecontainerapps.io — OpenAI-compat SSE, JWT auth, Postgres memory; web app proxies to it | `v1.2` |
+| 3 | Relay↔agent sync + conversations | ✅ gate passed | Device WS → owner resolved + device upserted; LLM via luna-agent (`source=device`) → Postgres; web app shows devices/conversations/settings live; conversation ops (pin/archive/delete) work | `v1.3` (pending commit) |
 | 4 | Speech pipelines (realtime S2S) | ⬜ not started | — | `v1.4` |
 | 5 | Tools & MCP | ⬜ not started | — | `v1.5` |
 | 6 | Hardening & multi-device | ⬜ not started | — | `v2.0` |
@@ -26,7 +26,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
 
 ## What's live right now (baseline)
 
-- **Relay:** `luna-relay` on Azure Container Apps — `https://luna-relay.gentlecoast-5d201a63.centralindia.azurecontainerapps.io` (`/health` → `{"status":"ready"}`), image `lunarelayacr.azurecr.io/luna-relay:v6`, revision `--0000005`.
+- **Relay:** `luna-relay` on Azure Container Apps — `https://luna-relay.gentlecoast-5d201a63.centralindia.azurecontainerapps.io` (`/health` → `{"status":"ready"}`), image `lunarelayacr.azurecr.io/luna-relay:v8` (Phase 3: InsForge Postgres sync + AgentClient). Agent: `luna-agent:v2`.
 - **Device:** ESP32-S3 flashed 2026-09-29 (IDF 5.5.4, COM16), connects to relay over WSS. Wi-Fi config = `Raj`/`Raj@0311` (verified working with `PG-WIFI` test earlier — full chain: Wi-Fi → TLS → WSS connected → ready tone).
 - **Pipeline:** Azure Speech STT (en-IN) → DeepSeek-V4-Flash → Azure Speech TTS (en-IN-NeerjaNeural); Firestore memory via Azure WIF (key-less).
 - **Azure models available** on `datumm-agent-resource` (eastus2): `gpt-realtime-2.1` ✅ (realtime S2S, capacity 10), gpt-5.6-luna/sol/terra, gpt-6-astra, DeepSeek-V4-Pro/Flash, grok-4.3/4.6, Kimi-K2.7-Code, text-embedding-3-small.

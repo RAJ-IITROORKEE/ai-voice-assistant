@@ -23,6 +23,20 @@ public sealed class AzureOpenAiOptions
     public string Model { get; init; } = "DeepSeek-V4-Flash";
 }
 
+public sealed class InsForgeOptions
+{
+    /// <summary>Postgres connection string for InsForge database.</summary>
+    public string DatabaseUrl { get; init; } = string.Empty;
+    /// <summary>Base URL of the luna-agent service (e.g. https://luna-agent...azurecontainerapps.io).</summary>
+    public string AgentUrl { get; init; } = string.Empty;
+    /// <summary>Model the agent should use (forwarded as the request model).</summary>
+    public string AgentModel { get; init; } = "gpt-5.6-luna";
+    /// <summary>When true, route LLM turns through luna-agent instead of direct Azure OpenAI.</summary>
+    public bool UseAgent { get; init; }
+    /// <summary>When true, write device heartbeat + read settings from InsForge Postgres.</summary>
+    public bool SyncEnabled { get; init; }
+}
+
 public sealed class FirestoreOptions
 {
     public string ProjectId { get; init; } = string.Empty;
@@ -51,7 +65,8 @@ public sealed record RelayConfiguration(
     AzureSpeechOptions AzureSpeech,
     AzureOpenAiOptions AzureOpenAI,
     FirestoreOptions Firestore,
-    AssistantOptions Assistant)
+    AssistantOptions Assistant,
+    InsForgeOptions InsForge)
 {
     public AssistantProfile DefaultAssistantProfile => AssistantProfile.FromOptions(Assistant.DefaultProfile);
 
@@ -73,6 +88,19 @@ public sealed record RelayConfiguration(
         if (!Uri.TryCreate(AzureOpenAI.Endpoint, UriKind.Absolute, out _))
         {
             throw new InvalidOperationException("AzureOpenAI:Endpoint must be an absolute URL.");
+        }
+        if (InsForge.UseAgent)
+        {
+            if (!Uri.TryCreate(InsForge.AgentUrl, UriKind.Absolute, out _))
+            {
+                throw new InvalidOperationException("InsForge:AgentUrl must be an absolute URL when UseAgent is set.");
+            }
+            Require(InsForge.AgentModel, "InsForge:AgentModel");
+        }
+        if ((InsForge.UseAgent || InsForge.SyncEnabled) && string.IsNullOrWhiteSpace(InsForge.DatabaseUrl))
+        {
+            throw new InvalidOperationException(
+                "InsForge:DatabaseUrl is required when UseAgent or SyncEnabled is set.");
         }
         AssistantProfile profile = DefaultAssistantProfile;
         Require(profile.Id, "Assistant:DefaultProfile:Id");

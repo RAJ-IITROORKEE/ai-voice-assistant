@@ -132,22 +132,34 @@ $envVars = @(
     'Assistant__DefaultProfile__Memory__WindowMinutes=10080',
     'Assistant__DefaultProfile__Memory__MaximumHistoryTurns=20',
     'Assistant__DefaultProfile__Memory__MaximumArchivedConversations=5',
-    'Assistant__DefaultProfile__Tools__RequireConfirmationForWrites=true'
+    'Assistant__DefaultProfile__Tools__RequireConfirmationForWrites=true',
+    "Assistant__DefaultDeviceOwnerId=$($settings.Assistant.DefaultDeviceOwnerId)",
+    "InsForge__AgentUrl=$($settings.InsForge.AgentUrl)",
+    "InsForge__AgentModel=$($settings.InsForge.AgentModel)",
+    "InsForge__UseAgent=$($settings.InsForge.UseAgent.ToString().ToLower())",
+    "InsForge__SyncEnabled=$($settings.InsForge.SyncEnabled.ToString().ToLower())"
 )
 $secretEnv = @(
     'Relay__DeviceToken=secretref:relay-device-token',
     'AzureSpeech__Key=secretref:speech-key',
-    'AzureOpenAI__ApiKey=secretref:openai-key'
+    'AzureOpenAI__ApiKey=secretref:openai-key',
+    'InsForge__DatabaseUrl=secretref:insforge-database-url'
 )
 
 if (az containerapp show --name $AppName --resource-group $ResourceGroup 2>$null) {
-    Invoke-Az containerapp update --name $AppName --resource-group $ResourceGroup --image $image | Out-Null
+    # Ensure secrets exist (idempotent) before pointing the app at them.
+    Invoke-Az containerapp secret set --name $AppName --resource-group $ResourceGroup `
+        --secrets relay-device-token=$($tokenMatch.Groups['token'].Value) speech-key=$($settings.AzureSpeech.Key) `
+            openai-key=$($settings.AzureOpenAI.ApiKey) insforge-database-url=$($settings.InsForge.DatabaseUrl) | Out-Null
+    Invoke-Az containerapp update --name $AppName --resource-group $ResourceGroup --image $image `
+        --set-env-vars $envVars $secretEnv | Out-Null
 } else {
     Invoke-Az containerapp create --name $AppName --resource-group $ResourceGroup --environment $environmentId `
         --image $image --registry-server $acrLogin --user-assigned $identityId --registry-identity $identityId `
         --target-port 8080 --ingress external --transport auto --min-replicas $MinReplicas --max-replicas $MaxReplicas `
         --cpu 1.0 --memory 2Gi `
-        --secrets relay-device-token=$($tokenMatch.Groups['token'].Value) speech-key=$($settings.AzureSpeech.Key) openai-key=$($settings.AzureOpenAI.ApiKey) `
+        --secrets relay-device-token=$($tokenMatch.Groups['token'].Value) speech-key=$($settings.AzureSpeech.Key) `
+            openai-key=$($settings.AzureOpenAI.ApiKey) insforge-database-url=$($settings.InsForge.DatabaseUrl) `
         --env-vars $envVars $secretEnv | Out-Null
 }
 
