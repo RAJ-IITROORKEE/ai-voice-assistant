@@ -35,6 +35,14 @@ relay/.azure-deployment.json
 # Env files with credentials — never commit.
 .env.local
 .env*.local
+**/.env
+
+# Python agent
+agent/.venv/
+agent/__pycache__/
+agent/**/__pycache__/
+agent/*.log
+agent/uvicorn.out
 
 # InsForge & AI agent skills
 .insforge
