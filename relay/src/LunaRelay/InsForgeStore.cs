@@ -3,7 +3,11 @@ using Npgsql;
 namespace LunaRelay;
 
 /// <summary>Per-user assistant settings mirrored from the web app (settings table).</summary>
-public sealed record DeviceSettings(string Model, string Voice, string Language, string Persona);
+public sealed record DeviceSettings(string Model, string Voice, string Language, string Persona)
+{
+    /// <summary>Requested speech pipeline id (classic | azure-realtime | gemini-live). Empty = default.</summary>
+    public string Pipeline { get; init; } = string.Empty;
+}
 
 /// <summary>
 /// InsForge Postgres access for the relay: device ownership resolution, last_seen heartbeat,
@@ -147,7 +151,7 @@ public sealed class InsForgeStore : IAsyncDisposable
     {
         await using NpgsqlConnection connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var cmd = new NpgsqlCommand(
-            "SELECT model, voice, language, persona FROM settings WHERE user_id = @uid LIMIT 1", connection);
+            "SELECT model, voice, language, persona, pipeline FROM settings WHERE user_id = @uid LIMIT 1", connection);
         cmd.Parameters.AddWithValue("uid", Guid.Parse(userId));
         await using NpgsqlDataReader reader = await cmd.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -155,7 +159,10 @@ public sealed class InsForgeStore : IAsyncDisposable
             return null;
         }
         return new DeviceSettings(
-            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3));
+            reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3))
+        {
+            Pipeline = reader.IsDBNull(4) ? string.Empty : reader.GetString(4),
+        };
     }
 
     public async ValueTask DisposeAsync() => await _dataSource.DisposeAsync();

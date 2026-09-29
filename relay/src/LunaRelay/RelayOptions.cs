@@ -21,6 +21,25 @@ public sealed class AzureOpenAiOptions
     public string Endpoint { get; init; } = string.Empty;
     public string ApiKey { get; init; } = string.Empty;
     public string Model { get; init; } = "DeepSeek-V4-Flash";
+
+    /// <summary>Azure Realtime speech-to-speech deployment (e.g. gpt-realtime-2.1).</summary>
+    public string RealtimeModel { get; init; } = "gpt-realtime-2.1";
+    /// <summary>Azure OpenAI API version that supports the Realtime WebSocket API.</summary>
+    public string RealtimeApiVersion { get; init; } = "2025-04-01-preview";
+}
+
+public sealed class GeminiLiveOptions
+{
+    /// <summary>Google AI (Gemini) API key. Empty disables the Gemini Live pipeline.</summary>
+    public string ApiKey { get; init; } = string.Empty;
+    /// <summary>Gemini Live model (native-audio dialog).</summary>
+    public string Model { get; init; } = "gemini-2.5-flash-native-audio-latest";
+}
+
+public sealed class PipelinesOptions
+{
+    /// <summary>Default speech pipeline when the user's settings do not override it.</summary>
+    public string Default { get; init; } = "classic";
 }
 
 public sealed class InsForgeOptions
@@ -66,7 +85,9 @@ public sealed record RelayConfiguration(
     AzureOpenAiOptions AzureOpenAI,
     FirestoreOptions Firestore,
     AssistantOptions Assistant,
-    InsForgeOptions InsForge)
+    InsForgeOptions InsForge,
+    GeminiLiveOptions GeminiLive,
+    PipelinesOptions Pipelines)
 {
     public AssistantProfile DefaultAssistantProfile => AssistantProfile.FromOptions(Assistant.DefaultProfile);
 
