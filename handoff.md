@@ -3,8 +3,8 @@
 > Updated at the end of every work session. Read this first when resuming.
 
 **Last updated:** 2026-09-29
-**Current phase:** PLANNING — awaiting plan approval
-**Next action:** User reviews `PLAN.md` + `complete_phase_wise_plan.md`, answers decision points (§6 of PLAN.md), then Phase 0 begins.
+**Current phase:** Phase 1 — Web app MVP (in progress)
+**Next action:** Restart opencode to load the InsForge MCP (added to `~/.config/opencode/opencode.json`), complete OAuth, then provision InsForge tables/RLS/auth + admin user; wire auth & persistence; deploy to Vercel.
 
 ---
 
@@ -12,8 +12,8 @@
 
 | Phase | Name | Status | Gate result | Tag |
 |---|---|---|---|---|
-| 0 | Baseline commit & hygiene | ⬜ not started | — | `v1.0-azure-baseline` |
-| 1 | Web app MVP (Vercel) | ⬜ not started | — | `v1.1` |
+| 0 | Baseline commit & hygiene | ✅ done | committed `d280545`, tagged | `v1.0-azure-baseline` |
+| 1 | Web app MVP (Vercel) | 🟡 in progress | scaffold+shell build ✓, chat API streams from Azure ✓; auth/db pending | `v1.1` |
 | 2 | LangGraph agent service (ACA) | ⬜ not started | — | `v1.2` |
 | 3 | Relay↔agent sync + conversations | ⬜ not started | — | `v1.3` |
 | 4 | Speech pipelines (realtime S2S) | ⬜ not started | — | `v1.4` |
@@ -48,4 +48,5 @@ Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
 - Notion/Gmail OAuth connect flows (Phase 5, via web UI).
 
 ## Session log
-- **2026-09-29:** Azure migration completed (GCP Cloud Run → Container Apps); WIF Firestore auth working; firmware flashed & verified online; PG-WIFI E2E connectivity test passed; Wi-Fi reverted to `Raj`. Research completed: speech models (report in `docs/research/`), web stack (assistant-ui/shadcn/InsForge/LangGraph/MCP). PLAN.md + complete_phase_wise_plan.md + handoff.md written. **Awaiting plan approval.**
+- **2026-09-29 (1):** Azure migration completed (GCP Cloud Run → Container Apps); WIF Firestore auth working; firmware flashed & verified online; PG-WIFI E2E connectivity test passed; Wi-Fi reverted to `Raj`. Research completed: speech models (report in `docs/research/`), web stack (assistant-ui/shadcn/InsForge/LangGraph/MCP). PLAN.md + complete_phase_wise_plan.md + handoff.md written.
+- **2026-09-29 (2):** Plan approved (all default decisions: InsForge, Azure-realtime→Gemini order, Python agent, ACA sidecars, InsForge cloud). **Phase 0 done:** committed `d280545`, tagged `v1.0-azure-baseline`, remote = github.com/RAJ-IITROORKEE/ai-voice-assistant. **Phase 1 in progress:** `voice-agent-app/` scaffolded (assistant-ui: Next.js 16.3.6, React 19, AI SDK v7, Tailwind v4, base-nova style). Built AppShell (sidebar nav: Chats/Devices/Tools/MCP/Settings), dark-first ThemeProvider + ModeToggle, 4 panel components (devices/tools/mcp/settings placeholders). Moved aui components into `components/assistant-ui/elements/`. Chat route pointed at Azure Foundry OpenAI-compatible endpoint (`gpt-5.6-luna`), key in git-ignored `.env.local`. `pnpm build` ✓ all 6 routes; dev server home 200 ✓; `/api/chat` streams from Azure ✓. Added InsForge MCP to opencode config — **needs opencode restart + OAuth** before tables/RLS/auth can be provisioned.

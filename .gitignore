@@ -31,3 +31,22 @@ relay/*.local.xml
 relay/.cloud-deployment.json
 relay/.gcloud-deployment.json
 relay/.azure-deployment.json
+
+# Env files with credentials — never commit.
+.env.local
+.env*.local
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
