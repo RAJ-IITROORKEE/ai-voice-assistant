@@ -1,4 +1,11 @@
+using Azure.Core;
+using Azure.Identity;
+using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Firestore;
+using Grpc.Auth;
+using Grpc.Core;
+using System.Net.Http.Json;
+using System.Text.Json.Serialization;
 
 namespace LunaRelay;
 
@@ -170,8 +177,116 @@ public sealed class FirestoreConversationStore
         {
             builder.ProjectId = options.ProjectId;
         }
+
+        // When running on Azure there is no GCP ADC. If WIF settings are provided,
+        // exchange an Azure Managed Identity token for a federated GCP access token.
+        if (!string.IsNullOrWhiteSpace(options.AzureClientId) &&
+            !string.IsNullOrWhiteSpace(options.GcpServiceAccount) &&
+            !string.IsNullOrWhiteSpace(options.WifAudience))
+        {
+            ChannelCredentials channelCredentials =
+                await AzureWifCredentials.CreateAsync(options);
+            builder.ChannelCredentials = channelCredentials;
+            builder.GrpcAdapter = Google.Api.Gax.Grpc.GrpcNetClientAdapter.Default;
+        }
+
         FirestoreDb database = await builder.BuildAsync();
         return new Store(database, options, TimeProvider.System);
+    }
+
+    /// <summary>
+    /// Acquires an Azure AD token via Managed Identity, exchanges it with the GCP
+    /// Security Token Service for a federated token, then impersonates the target
+    /// service account to obtain a short-lived GCP access token.
+    /// </summary>
+    private static class AzureWifCredentials
+    {
+        private static readonly HttpClient Http = new();
+        private const string StsEndpoint = "https://sts.googleapis.com/v1/token";
+        private const string ImpersonationScope =
+            "https://www.googleapis.com/auth/cloud-platform";
+
+        public static async Task<ChannelCredentials> CreateAsync(FirestoreOptions options)
+        {
+            string gcpAccessToken = await GetImpersonatedAccessTokenAsync(options, CancellationToken.None);
+            ITokenAccess credential = GoogleCredential.FromAccessToken(gcpAccessToken);
+            return credential.ToChannelCredentials();
+        }
+
+        public static async Task<string> GetImpersonatedAccessTokenAsync(
+            FirestoreOptions options, CancellationToken cancellationToken)
+        {
+            // 1. Azure AD token for the managed identity, scoped to the Entra app
+            //    registered as the Workload Identity Federation audience.
+            const string azureWifAudience = "api://b0ac73f1-8f1d-42f5-af7a-c0af3c3aa54f";
+            var azureCredential = new ManagedIdentityCredential(options.AzureClientId);
+            AccessToken azureToken = await azureCredential.GetTokenAsync(
+                new TokenRequestContext(new[] { azureWifAudience }),
+                cancellationToken);
+
+            // 2. Exchange Azure token for a GCP federated token.
+            var stsPayload = new Dictionary<string, object?>
+            {
+                ["audience"] = options.WifAudience,
+                ["grantType"] = "urn:ietf:params:oauth:grant-type:token-exchange",
+                ["requestedTokenType"] = "urn:ietf:params:oauth:token-type:access_token",
+                ["subjectTokenType"] = "urn:ietf:params:oauth:token-type:jwt",
+                ["subjectToken"] = azureToken.Token,
+                ["scope"] = ImpersonationScope,
+            };
+            using var stsRequest = new HttpRequestMessage(HttpMethod.Post, StsEndpoint)
+            {
+                Content = JsonContent.Create(stsPayload),
+            };
+            HttpResponseMessage stsResponse = await Http.SendAsync(stsRequest, cancellationToken);
+            string stsBody = await stsResponse.Content.ReadAsStringAsync(cancellationToken);
+            if (!stsResponse.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"GCP STS token exchange failed ({(int)stsResponse.StatusCode}): {stsBody}");
+            }
+            StsTokenResponse? federated = System.Text.Json.JsonSerializer
+                .Deserialize<StsTokenResponse>(stsBody);
+            if (federated?.AccessToken is null)
+            {
+                throw new InvalidOperationException("GCP STS did not return an access token.");
+            }
+
+            // 3. Impersonate the service account to get a final access token.
+            string impersonateUrl =
+                $"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{options.GcpServiceAccount}:generateAccessToken";
+            var impersonatePayload = new { scope = new[] { ImpersonationScope } };
+            using var impersonateRequest = new HttpRequestMessage(HttpMethod.Post, impersonateUrl)
+            {
+                Content = JsonContent.Create(impersonatePayload),
+            };
+            impersonateRequest.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", federated.AccessToken);
+            HttpResponseMessage impersonateResponse = await Http.SendAsync(impersonateRequest, cancellationToken);
+            string impersonateBody = await impersonateResponse.Content.ReadAsStringAsync(cancellationToken);
+            if (!impersonateResponse.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"GCP impersonation failed ({(int)impersonateResponse.StatusCode}): {impersonateBody}");
+            }
+            ImpersonateTokenResponse? impersonated = System.Text.Json.JsonSerializer
+                .Deserialize<ImpersonateTokenResponse>(impersonateBody);
+            if (impersonated?.AccessToken is null)
+            {
+                throw new InvalidOperationException("Service account impersonation did not return an access token.");
+            }
+            return impersonated.AccessToken;
+        }
+
+        private sealed class StsTokenResponse
+        {
+            [JsonPropertyName("access_token")] public string? AccessToken { get; set; }
+        }
+
+        private sealed class ImpersonateTokenResponse
+        {
+            [JsonPropertyName("accessToken")] public string? AccessToken { get; set; }
+        }
     }
 
     private sealed class Store(FirestoreDb database, FirestoreOptions options, TimeProvider clock)

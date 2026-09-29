@@ -30,3 +30,4 @@ relay/*.log
 relay/*.local.xml
 relay/.cloud-deployment.json
 relay/.gcloud-deployment.json
+relay/.azure-deployment.json

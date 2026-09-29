@@ -27,6 +27,23 @@ public sealed class FirestoreOptions
 {
     public string ProjectId { get; init; } = string.Empty;
     public string ConversationCollection { get; init; } = "luna_agent_sessions";
+    /// <summary>Azure user-assigned managed identity client id used for Workload Identity Federation.</summary>
+    public string? AzureClientId { get; init; }
+    /// <summary>GCP service account email impersonated through Workload Identity Federation.</summary>
+    public string? GcpServiceAccount { get; init; }
+    /// <summary>GCP Workload Identity Pool id.</summary>
+    public string? WorkloadIdentityPool { get; init; }
+    /// <summary>GCP OIDC provider id inside the pool.</summary>
+    public string? WorkloadIdentityProvider { get; init; }
+    /// <summary>GCP project number hosting the workload identity pool.</summary>
+    public string? GcpProjectNumber { get; init; }
+    /// <summary>Full STS audience for the pool provider.</summary>
+    public string? WifAudience =>
+        string.IsNullOrWhiteSpace(GcpProjectNumber) ||
+        string.IsNullOrWhiteSpace(WorkloadIdentityPool) ||
+        string.IsNullOrWhiteSpace(WorkloadIdentityProvider)
+            ? null
+            : $"//iam.googleapis.com/projects/{GcpProjectNumber}/locations/global/workloadIdentityPools/{WorkloadIdentityPool}/providers/{WorkloadIdentityProvider}";
 }
 
 public sealed record RelayConfiguration(
