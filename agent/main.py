@@ -57,6 +57,7 @@ class ChatRequest(BaseModel):
     stream: bool = True
     thread_id: Optional[str] = None
     user_sub: Optional[str] = None  # set by relay (device), trusted via device token
+    source: Optional[str] = None  # 'device' for relay turns; defaults to 'web'
 
 
 def _flatten(content: Any) -> str:
@@ -108,7 +109,8 @@ async def chat_completions(body: ChatRequest, user_sub: str = Depends(get_princi
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages required")
 
-    thread_id = await db.get_or_create_conversation(user_sub, body.thread_id)
+    source = "device" if (body.source or "").lower() == "device" else "web"
+    thread_id = await db.get_or_create_conversation(user_sub, body.thread_id, source)
 
     history = await db.load_history(user_sub, thread_id)
     # Build model messages: system + prior history + current incoming user turn(s).

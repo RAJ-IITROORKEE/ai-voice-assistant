@@ -3,6 +3,11 @@ namespace LunaRelay;
 public sealed class AssistantOptions
 {
     public AssistantProfileOptions DefaultProfile { get; init; } = new();
+    /// <summary>
+    /// InsForge user id (uuid) that owns unclaimed devices. Single-user deployment: set this to
+    /// the admin user and any new device is auto-claimed on first connect.
+    /// </summary>
+    public string? DefaultDeviceOwnerId { get; init; }
 }
 
 public sealed class AssistantProfileOptions

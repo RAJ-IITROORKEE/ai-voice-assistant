@@ -12,7 +12,8 @@ var configuration = new RelayConfiguration(
     builder.Configuration.GetSection("AzureSpeech").Get<AzureSpeechOptions>() ?? new AzureSpeechOptions(),
     builder.Configuration.GetSection("AzureOpenAI").Get<AzureOpenAiOptions>() ?? new AzureOpenAiOptions(),
     builder.Configuration.GetSection("Firestore").Get<FirestoreOptions>() ?? new FirestoreOptions(),
-    builder.Configuration.GetSection("Assistant").Get<AssistantOptions>() ?? new AssistantOptions());
+    builder.Configuration.GetSection("Assistant").Get<AssistantOptions>() ?? new AssistantOptions(),
+    builder.Configuration.GetSection("InsForge").Get<InsForgeOptions>() ?? new InsForgeOptions());
 VoiceCatalog voices = VoiceCatalog.Create(configuration.AzureSpeech.DefaultServiceVoice);
 ToolRegistry tools = ToolRegistry.Empty;
 configuration.Validate(voices, tools);
@@ -34,6 +35,7 @@ builder.Services.AddSingleton(configuration);
 builder.Services.AddSingleton(configuration.AzureSpeech);
 builder.Services.AddSingleton(configuration.AzureOpenAI);
 builder.Services.AddSingleton(configuration.Firestore);
+builder.Services.AddSingleton(configuration.InsForge);
 builder.Services.AddSingleton(configuration.DefaultAssistantProfile);
 builder.Services.AddSingleton(voices);
 builder.Services.AddSingleton(tools);
@@ -44,7 +46,22 @@ builder.Services.AddSingleton<IToolApprovalValidator, DenyAllToolApprovalValidat
 builder.Services.AddSingleton<IToolExecutor, ToolExecutor>();
 builder.Services.AddSingleton<IConversationStore>(
     await FirestoreConversationStore.CreateAsync(configuration.Firestore));
-builder.Services.AddHttpClient<IAgentResponder, AzureOpenAiChatClient>();
+// InsForge Postgres: device ownership, heartbeat, settings sync (Phase 3).
+if (configuration.InsForge.SyncEnabled || configuration.InsForge.UseAgent)
+{
+    builder.Services.AddSingleton(sp =>
+        InsForgeStore.Create(
+            configuration.InsForge, sp.GetRequiredService<ILogger<InsForgeStore>>()));
+}
+// Route LLM turns through luna-agent when configured, else direct Azure OpenAI (Phase 1 fallback).
+if (configuration.InsForge.UseAgent)
+{
+    builder.Services.AddHttpClient<IAgentResponder, AgentClient>();
+}
+else
+{
+    builder.Services.AddHttpClient<IAgentResponder, AzureOpenAiChatClient>();
+}
 builder.Services.AddSingleton<StreamingTts>();
 builder.Services.AddTransient<VoiceSession>();
 
@@ -87,14 +104,52 @@ app.Map("/voice", async context =>
     {
         principal = principal with { DeviceId = deviceId };
     }
+
+    // Resolve the device's owning InsForge user so agent turns persist under their RLS scope
+    // and appear in their web app. Falls back to the credential subject when sync is off.
+    string? ownerId = null;
+    InsForgeStore? insforge = null;
+    try
+    {
+        insforge = context.RequestServices.GetService<InsForgeStore>();
+        if (insforge is not null && deviceId is not null)
+        {
+            string? defaultOwner = configuration.Assistant.DefaultDeviceOwnerId;
+            ownerId = await insforge.ResolveOwnerAndTouchAsync(
+                deviceId, firmware: null, defaultOwner, context.RequestAborted);
+        }
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException)
+    {
+        // Postgres hiccup must not break voice: fall back to the credential subject
+        // (Firestore memory only) and skip web-app sync for this connection.
+        voiceLogger.LogWarning(exception,
+            "InsForge sync unavailable for device {DeviceId}; continuing without sync", deviceId);
+        insforge = null;
+    }
+
     IAssistantContextResolver contextResolver =
         context.RequestServices.GetRequiredService<IAssistantContextResolver>();
     AssistantContext assistantContext = await contextResolver.ResolveAsync(principal, context.RequestAborted);
+    if (ownerId is not null)
+    {
+        assistantContext = assistantContext with { OwnerId = ownerId };
+    }
 
     using System.Net.WebSockets.WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-    await using VoiceSession session = ActivatorUtilities.CreateInstance<VoiceSession>(
-        context.RequestServices, socket, assistantContext);
-    await session.RunAsync(context.RequestAborted);
+    try
+    {
+        await using VoiceSession session = ActivatorUtilities.CreateInstance<VoiceSession>(
+            context.RequestServices, socket, assistantContext);
+        await session.RunAsync(context.RequestAborted);
+    }
+    finally
+    {
+        if (insforge is not null && deviceId is not null)
+        {
+            await insforge.MarkOfflineAsync(deviceId, CancellationToken.None);
+        }
+    }
 });
 
 await app.RunAsync();

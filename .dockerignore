@@ -16,3 +16,10 @@ relay/**/bin/
 relay/**/obj/
 relay/*.log
 relay/.gcloud-deployment.json
+voice-agent-app/node_modules/
+voice-agent-app/.next/
+agent/.venv/
+agent/__pycache__/
+agent/*.log
+**/node_modules/
+**/__pycache__/

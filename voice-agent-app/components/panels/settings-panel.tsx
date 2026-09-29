@@ -1,5 +1,8 @@
 "use client";
 
+import * as React from "react";
+import { Check, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -7,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -17,8 +21,90 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ModeToggle } from "@/components/mode-toggle";
+import { insforge } from "@/lib/insforge";
+
+const DEFAULTS = {
+  pipeline: "classic",
+  model: "gpt-5.6-luna",
+  voice: "en-IN-NeerjaNeural",
+  language: "en-IN",
+  persona:
+    "You are Luna, a concise, friendly voice assistant. Answer briefly and clearly; responses are spoken aloud.",
+};
 
 export function SettingsPanel() {
+  const [userId, setUserId] = React.useState<string | null>(null);
+  const [pipeline, setPipeline] = React.useState(DEFAULTS.pipeline);
+  const [model, setModel] = React.useState(DEFAULTS.model);
+  const [voice, setVoice] = React.useState(DEFAULTS.voice);
+  const [language, setLanguage] = React.useState(DEFAULTS.language);
+  const [persona, setPersona] = React.useState(DEFAULTS.persona);
+  const [loading, setLoading] = React.useState(true);
+  const [saving, setSaving] = React.useState(false);
+  const [saved, setSaved] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: auth } = await insforge.auth.getCurrentUser();
+        const uid = (auth?.user as { id?: string } | null)?.id ?? null;
+        if (!uid) return;
+        if (!cancelled) setUserId(uid);
+        const { data, error } = await insforge.database
+          .from("settings")
+          .select("pipeline,model,voice,language,persona")
+          .eq("user_id", uid)
+          .maybeSingle();
+        if (error) throw error;
+        if (!cancelled && data) {
+          const row = data as Partial<typeof DEFAULTS>;
+          if (row.pipeline) setPipeline(row.pipeline);
+          if (row.model) setModel(row.model);
+          if (row.voice) setVoice(row.voice);
+          if (row.language) setLanguage(row.language);
+          if (row.persona) setPersona(row.persona);
+        }
+      } catch (e) {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : "Failed to load settings");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = async () => {
+    if (!userId) return;
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const { error } = await insforge.database.from("settings").upsert(
+        {
+          user_id: userId,
+          pipeline,
+          model,
+          voice,
+          language,
+          persona,
+        },
+        { onConflict: "user_id" }
+      );
+      if (error) throw error;
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
       <div>
@@ -48,18 +134,18 @@ export function SettingsPanel() {
         <CardContent className="grid gap-4">
           <div className="grid gap-2">
             <Label>Pipeline</Label>
-            <Select defaultValue="classic" disabled>
+            <Select value={pipeline} onValueChange={(v) => v && setPipeline(v)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="classic">Classic (Azure STT → LLM → TTS)</SelectItem>
-                <SelectItem value="azure-realtime">Azure Realtime (Phase 4)</SelectItem>
-                <SelectItem value="gemini-live">Gemini Live (Phase 4)</SelectItem>
+                <SelectItem value="azure-realtime" disabled>Azure Realtime (Phase 4)</SelectItem>
+                <SelectItem value="gemini-live" disabled>Gemini Live (Phase 4)</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div className="grid gap-2">
             <Label>Model</Label>
-            <Select defaultValue="deepseek-flash" disabled>
+            <Select value={model} onValueChange={(v) => v && setModel(v)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="deepseek-flash">DeepSeek-V4-Flash (fast, cheap)</SelectItem>
@@ -70,16 +156,19 @@ export function SettingsPanel() {
           </div>
           <div className="grid gap-2">
             <Label>Voice</Label>
-            <Select defaultValue="neerja" disabled>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="neerja">en-IN Neerja (current)</SelectItem>
-              </SelectContent>
-            </Select>
+            <Input
+              value={voice}
+              onChange={(e) => setVoice(e.target.value)}
+              placeholder="en-IN-NeerjaNeural"
+              className="font-mono"
+            />
+            <p className="text-muted-foreground text-xs">
+              Azure voice name, e.g. en-IN-NeerjaNeural.
+            </p>
           </div>
           <div className="grid gap-2">
             <Label>Language</Label>
-            <Select defaultValue="en-IN" disabled>
+            <Select value={language} onValueChange={(v) => v && setLanguage(v)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="en-IN">English (India)</SelectItem>
@@ -97,16 +186,30 @@ export function SettingsPanel() {
         </CardHeader>
         <CardContent>
           <Textarea
+            value={persona}
+            onChange={(e) => setPersona(e.target.value)}
             placeholder="You are Luna, a concise, friendly voice assistant…"
-            defaultValue="You are Luna, a concise, friendly voice assistant. Answer briefly and clearly; responses are spoken aloud."
-            disabled
+            rows={4}
           />
         </CardContent>
       </Card>
 
-      <p className="text-muted-foreground text-xs">
-        Editing is enabled once the settings store is connected (end of Phase 1).
-      </p>
+      <div className="flex items-center gap-3">
+        <Button onClick={save} disabled={loading || saving || !userId}>
+          {saving ? (
+            <Loader2 className="mr-2 size-4 animate-spin" />
+          ) : saved ? (
+            <Check className="mr-2 size-4" />
+          ) : null}
+          {saving ? "Saving…" : saved ? "Saved" : "Save settings"}
+        </Button>
+        {saved && (
+          <span className="text-muted-foreground inline-flex items-center gap-1 text-sm">
+            <Check className="size-4 text-green-500" /> Saved
+          </span>
+        )}
+        {error && <span className="text-destructive text-sm">{error}</span>}
+      </div>
     </div>
   );
 }

@@ -28,10 +28,11 @@ import { Separator } from "@/components/ui/separator";
 import { ModeToggle } from "@/components/mode-toggle";
 import { UserMenu } from "@/components/user-menu";
 
-export type NavSection = "chat" | "devices" | "tools" | "mcp" | "settings";
+export type NavSection = "chat" | "conversations" | "devices" | "tools" | "mcp" | "settings";
 
 const NAV: { key: NavSection; label: string; href: string; icon: React.ElementType }[] = [
   { key: "chat", label: "Chats", href: "/", icon: MessagesSquare },
+  { key: "conversations", label: "Conversations", href: "/conversations", icon: MessagesSquare },
   { key: "devices", label: "Devices", href: "/devices", icon: Cpu },
   { key: "tools", label: "Tools", href: "/tools", icon: Wrench },
   { key: "mcp", label: "MCP Servers", href: "/mcp", icon: Plug },
