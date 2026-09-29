@@ -3,8 +3,8 @@
 > Updated at the end of every work session. Read this first when resuming.
 
 **Last updated:** 2026-09-29
-**Current phase:** Phase 1 — Web app MVP (in progress)
-**Next action:** Restart opencode to load the InsForge MCP (added to `~/.config/opencode/opencode.json`), complete OAuth, then provision InsForge tables/RLS/auth + admin user; wire auth & persistence; deploy to Vercel.
+**Current phase:** Phase 1 ✅ done → Phase 2 next (LangGraph agent service)
+**Next action:** Scaffold `agent/` (Python LangGraph), Docker → ACA `luna-agent`, route web chat through it. See `docs/phases/phase-1.md` for Phase 1 report.
 
 ---
 
@@ -13,7 +13,7 @@
 | Phase | Name | Status | Gate result | Tag |
 |---|---|---|---|---|
 | 0 | Baseline commit & hygiene | ✅ done | committed `d280545`, tagged | `v1.0-azure-baseline` |
-| 1 | Web app MVP (Vercel) | 🟡 in progress | scaffold+shell build ✓, chat API streams from Azure ✓; auth/db pending | `v1.1` |
+| 1 | Web app MVP (Vercel) | ✅ gate passed | https://luna-voice-agent.vercel.app — auth+DB+RLS live, chat streams, deployed | `v1.1` |
 | 2 | LangGraph agent service (ACA) | ⬜ not started | — | `v1.2` |
 | 3 | Relay↔agent sync + conversations | ⬜ not started | — | `v1.3` |
 | 4 | Speech pipelines (realtime S2S) | ⬜ not started | — | `v1.4` |
@@ -49,4 +49,5 @@ Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
 
 ## Session log
 - **2026-09-29 (1):** Azure migration completed (GCP Cloud Run → Container Apps); WIF Firestore auth working; firmware flashed & verified online; PG-WIFI E2E connectivity test passed; Wi-Fi reverted to `Raj`. Research completed: speech models (report in `docs/research/`), web stack (assistant-ui/shadcn/InsForge/LangGraph/MCP). PLAN.md + complete_phase_wise_plan.md + handoff.md written.
-- **2026-09-29 (2):** Plan approved (all default decisions: InsForge, Azure-realtime→Gemini order, Python agent, ACA sidecars, InsForge cloud). **Phase 0 done:** committed `d280545`, tagged `v1.0-azure-baseline`, remote = github.com/RAJ-IITROORKEE/ai-voice-assistant. **Phase 1 in progress:** `voice-agent-app/` scaffolded (assistant-ui: Next.js 16.3.6, React 19, AI SDK v7, Tailwind v4, base-nova style). Built AppShell (sidebar nav: Chats/Devices/Tools/MCP/Settings), dark-first ThemeProvider + ModeToggle, 4 panel components (devices/tools/mcp/settings placeholders). Moved aui components into `components/assistant-ui/elements/`. Chat route pointed at Azure Foundry OpenAI-compatible endpoint (`gpt-5.6-luna`), key in git-ignored `.env.local`. `pnpm build` ✓ all 6 routes; dev server home 200 ✓; `/api/chat` streams from Azure ✓. Added InsForge MCP to opencode config — **needs opencode restart + OAuth** before tables/RLS/auth can be provisioned.
+- **2026-09-29 (2):** Plan approved (all default decisions: InsForge, Azure-realtime→Gemini order, Python agent, ACA sidecars, InsForge cloud). **Phase 0 done:** committed `d280545`, tagged `v1.0-azure-baseline`, remote = github.com/RAJ-IITROORKEE/ai-voice-assistant. **Phase 1 in progress:** `voice-agent-app/` scaffolded (assistant-ui: Next.js 16.3.6, React 19, AI SDK v7, Tailwind v4, base-nova style). Built AppShell (sidebar nav: Chats/Devices/Tools/MCP/Settings), dark-first ThemeProvider + ModeToggle, 4 panel components (devices/tools/mcp/settings placeholders). Moved aui components into `components/assistant-ui/elements/`. Chat route pointed at Azure Foundry OpenAI-compatible endpoint (`gpt-5.6-luna`), key in git-ignored `.env.local`. `pnpm build` ✓ all 6 routes; dev server home 200 ✓; `/api/chat` streams from Azure ✓.
+- **2026-09-29 (3):** **InsForge backend LIVE.** Authed CLI via device-flow OAuth (rajrabidas001@gmail.com, Google-verified). Created project **luna-voice-agent** (id `dbe5bdcc-163a-473f-92ab-924bd784044e`, appkey `ts4hxi45`, region us-east, base `https://ts4hxi45.us-east.insforge.app`), linked to `voice-agent-app/`. OAuth providers google+github enabled by default. **DB schema applied** via `db/migrations/0001_init.sql` + `0002_auth_uid_policies.sql` (ran with `pg` node client — no local psql): 6 tables `devices, conversations, messages, settings, mcp_servers, tool_calls`, all with owner-only RLS using `auth.uid()`, indexes, `set_updated_at()` triggers, grants to anon+authenticated. **RLS verified E2E via REST**: owner JWT reads/inserts, anon gets `[]`, admin `ik_` bypasses. Critical gotcha learned: after creating tables must run `NOTIFY pgrst,'reload schema'` or PostgREST returns `{}`. Admin user rajrabidas001@gmail.com created in auth.users (id `d535784d-669c-4a6e-931b-49c9580d2a44`); `require_email_verification` set false via `insforge.toml`+`config apply` (no SMTP on free tier). InsForge anon key + base in git-ignored `.env.local` (root + app). Root `.env.local` added to `.gitignore`. SDK `@insforge/sdk` installed; `lib/insforge.ts` client created. **Next:** wire auth UI (sign-in page + guard), conversation persistence to InsForge, Vercel deploy.

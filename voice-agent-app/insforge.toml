@@ -1,5 +1,5 @@
 [auth]
-allowed_redirect_urls = []
+allowed_redirect_urls = ["https://luna-voice-agent.vercel.app/", "http://localhost:3000/"]
 require_email_verification = false
 verify_email_method = "code"
 reset_password_method = "code"

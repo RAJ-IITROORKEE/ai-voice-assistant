@@ -1,5 +1,10 @@
 import { Assistant } from "./assistant";
+import { AuthGate } from "@/components/auth-gate";
 
 export default function Home() {
-  return <Assistant />;
+  return (
+    <AuthGate>
+      <Assistant />
+    </AuthGate>
+  );
 }

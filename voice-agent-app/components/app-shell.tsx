@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { ModeToggle } from "@/components/mode-toggle";
+import { UserMenu } from "@/components/user-menu";
 
 export type NavSection = "chat" | "devices" | "tools" | "mcp" | "settings";
 
@@ -90,7 +91,7 @@ export function AppShell({
           <SidebarRail />
           <SidebarFooter className="border-t">
             <div className="flex items-center justify-between px-2 py-1">
-              <span className="text-muted-foreground text-xs">v1.1</span>
+              <UserMenu />
               <ModeToggle />
             </div>
           </SidebarFooter>
