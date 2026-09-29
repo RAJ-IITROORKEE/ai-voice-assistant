@@ -21,7 +21,7 @@ from pydantic import BaseModel
 import db
 from auth import validate_token
 from config import settings
-from graph import _build_model, _to_lc
+from graph import _to_lc, graph
 
 
 @asynccontextmanager
@@ -131,10 +131,15 @@ async def chat_completions(body: ChatRequest, user_sub: str = Depends(get_princi
         (t for t in (_flatten(m.content) for m in reversed(body.messages)) if t), ""
     )
 
-    model = _build_model()
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created = int(time.time())
     model_name = body.model or settings.azure_openai_model
+
+    initial_state = {
+        "messages": lc_messages,
+        "user_sub": user_sub,
+        "thread_id": thread_id,
+    }
 
     async def sse_stream():
         full: list[str] = []
@@ -153,8 +158,13 @@ async def chat_completions(body: ChatRequest, user_sub: str = Depends(get_princi
             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
         }) + "\n\n"
         try:
-            async for chunk in model.astream(lc_messages):
-                token = chunk.content
+            # Run the LangGraph tool loop, streaming only assistant content tokens
+            # (skip tool-call arguments and tool results).
+            async for event in graph.astream_events(initial_state, version="v2"):
+                if event.get("event") != "on_chat_model_stream":
+                    continue
+                chunk = event.get("data", {}).get("chunk")
+                token = getattr(chunk, "content", None) if chunk is not None else None
                 if not token:
                     continue
                 full.append(token)

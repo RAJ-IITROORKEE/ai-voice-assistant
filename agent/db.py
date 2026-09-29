@@ -109,6 +109,31 @@ async def append_message(user_sub: str, thread_id: str, role: str, content: str)
         )
 
 
+async def record_tool_call(
+    user_sub: str,
+    thread_id: str,
+    tool: str,
+    args: dict[str, Any],
+    result_summary: str,
+    status: str,
+    server: str = "built-in",
+) -> None:
+    """Persist a tool invocation to tool_calls so the web UI can show what the agent did."""
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        await conn.execute(
+            """
+            INSERT INTO tool_calls (user_id, conversation_id, server, tool, args, result_summary, approved, status)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            """,
+            (user_sub, thread_id, server, tool, json.dumps(args),
+             result_summary[:2000], True, status),
+        )
+
+
 async def maybe_set_title(user_sub: str, thread_id: str, first_user_text: str) -> None:
     title = first_user_text.strip().splitlines()[0][:80] if first_user_text.strip() else "New chat"
     pool = await get_pool()

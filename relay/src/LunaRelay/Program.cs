@@ -142,6 +142,30 @@ app.Map("/voice", async context =>
     }
 
     using System.Net.WebSockets.WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+
+    // Keep the device's dashboard presence fresh for the whole (persistent) session so the
+    // web app shows Online while the device is powered and connected, not just mid-turn.
+    using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+    Task? heartbeat = null;
+    if (insforge is not null && deviceId is not null)
+    {
+        InsForgeStore heartbeatStore = insforge;
+        string heartbeatDevice = deviceId;
+        CancellationToken heartbeatToken = heartbeatCts.Token;
+        heartbeat = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            try
+            {
+                while (await timer.WaitForNextTickAsync(heartbeatToken))
+                {
+                    await heartbeatStore.HeartbeatAsync(heartbeatDevice, heartbeatToken);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+    }
+
     try
     {
         await using VoiceSession session = ActivatorUtilities.CreateInstance<VoiceSession>(
@@ -150,6 +174,11 @@ app.Map("/voice", async context =>
     }
     finally
     {
+        heartbeatCts.Cancel();
+        if (heartbeat is not null)
+        {
+            try { await heartbeat; } catch (OperationCanceledException) { }
+        }
         if (insforge is not null && deviceId is not null)
         {
             await insforge.MarkOfflineAsync(deviceId, CancellationToken.None);

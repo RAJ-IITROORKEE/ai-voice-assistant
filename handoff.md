@@ -3,8 +3,8 @@
 > Updated at the end of every work session. Read this first when resuming.
 
 **Last updated:** 2026-09-29
-**Current phase:** Phase 4 ✅ built+deployed → Phase 5 next (Tools & MCP)
-**Next action:** Wire `ToolExecutor`/`ToolContracts` into the agent (LangGraph tool nodes), MCP server connections from web app, tool-call visibility in UI. See `docs/phases/phase-4.md` for the Phase 4 report.
+**Current phase:** Phase 5 ✅ done → Phase 6 next (Memory & voice profiles + live MCP)
+**Next action:** Long-term memory extraction into Postgres; per-user voice/persona profiles per turn; live MCP server connections exposing tools to the agent. See `docs/phases/phase-5.md` for the Phase 5 report.
 
 ---
 
@@ -16,9 +16,9 @@
 | 1 | Web app MVP (Vercel) | ✅ gate passed | https://luna-voice-agent.vercel.app — auth+DB+RLS live, chat streams, deployed | `v1.1` |
 | 2 | LangGraph agent service (ACA) | ✅ gate passed | https://luna-agent.gentlecoast-5d201a63.centralindia.azurecontainerapps.io — OpenAI-compat SSE, JWT auth, Postgres memory; web app proxies to it | `v1.2` |
 | 3 | Relay↔agent sync + conversations | ✅ gate passed | Device WS → owner resolved + device upserted; LLM via luna-agent (`source=device`) → Postgres; web app shows devices/conversations/settings live; conversation ops (pin/archive/delete) work | `v1.3` |
-| 4 | Speech pipelines (realtime S2S) | ✅ built+deployed | `IVoicePipeline` + Classic (unchanged) + Azure Realtime S2S (`gpt-realtime-2.1`, v1 protocol) + Gemini scaffold; per-turn latency; settings-driven pipeline. Relay v9 deployed. Physical S2S E2E pending user button test | `v1.4` (pending commit) |
-| 5 | Tools & MCP | ⬜ not started | — | `v1.5` |
-| 6 | Hardening & multi-device | ⬜ not started | — | `v2.0` |
+| 4 | Speech pipelines (realtime S2S) | ✅ done | `IVoicePipeline` + Classic (unchanged) + Azure Realtime S2S (`gpt-realtime-2.1`, v1 protocol) + Gemini scaffold; per-turn latency; settings-driven pipeline. Relay v9 deployed. | `v1.4` |
+| 5 | Tools & MCP | ✅ done | Agent LangGraph tool loop (`calculator`, `get_current_time`); tool_calls persisted to Postgres; tools + mcp panels live in web UI (MCP connections scaffold, live wiring in Phase 6). Agent v4 + relay v10 (device Online heartbeat) deployed | `v1.5` (pending commit) |
+| 6 | Memory & voice profiles + MCP | ⬜ not started | — | `v2.0` |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
 
@@ -26,7 +26,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
 
 ## What's live right now (baseline)
 
-- **Relay:** `luna-relay` on Azure Container Apps — `https://luna-relay.gentlecoast-5d201a63.centralindia.azurecontainerapps.io` (`/health` → `{"status":"ready"}`), image `lunarelayacr.azurecr.io/luna-relay:v9` (Phase 4: pluggable speech pipelines). Agent: `luna-agent:v2`. **Speech fix applied 2026-09-29:** AzureSpeech key/region corrected to `datumm-agent-resource` (eastus2) — classic STT/TTS now works (was 401 from an invalid eastus key).
+- **Relay:** `luna-relay` on Azure Container Apps — `https://luna-relay.gentlecoast-5d201a63.centralindia.azurecontainerapps.io` (`/health` → `{"status":"ready"}`), image `lunarelayacr.azurecr.io/luna-relay:v10` (Phase 4 pipelines + Phase 5 device Online heartbeat). Agent: `luna-agent:v4` (Phase 5 tool loop). **Speech fix applied 2026-09-29:** AzureSpeech key/region corrected to `datumm-agent-resource` (eastus2) — classic STT/TTS works.
 - **Device:** ESP32-S3 flashed 2026-09-29 (IDF 5.5.4, COM16), connects to relay over WSS. Wi-Fi config = `Raj`/`Raj@0311` (verified working with `PG-WIFI` test earlier — full chain: Wi-Fi → TLS → WSS connected → ready tone).
 - **Pipeline:** Azure Speech STT (en-IN) → DeepSeek-V4-Flash → Azure Speech TTS (en-IN-NeerjaNeural); Firestore memory via Azure WIF (key-less).
 - **Azure models available** on `datumm-agent-resource` (eastus2): `gpt-realtime-2.1` ✅ (realtime S2S, capacity 10), gpt-5.6-luna/sol/terra, gpt-6-astra, DeepSeek-V4-Pro/Flash, grok-4.3/4.6, Kimi-K2.7-Code, text-embedding-3-small.

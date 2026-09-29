@@ -129,6 +129,23 @@ public sealed class InsForgeStore : IAsyncDisposable
         await touch.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>Refresh last_seen/online while a device session is live (best-effort heartbeat).</summary>
+    public async Task HeartbeatAsync(string deviceId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using NpgsqlConnection connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var cmd = new NpgsqlCommand(
+                "UPDATE devices SET last_seen = now(), online = true WHERE device_id = @did", connection);
+            cmd.Parameters.AddWithValue("did", deviceId);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogDebug(exception, "Heartbeat failed for device {DeviceId}", deviceId);
+        }
+    }
+
     /// <summary>Mark a device offline (best-effort, on disconnect).</summary>
     public async Task MarkOfflineAsync(string deviceId, CancellationToken cancellationToken)
     {
