@@ -1,5 +1,7 @@
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
+using System.Threading.Channels;
 using LunaRelay.Protocol;
 
 namespace LunaRelay;
@@ -13,7 +15,9 @@ public sealed class VoiceSession(
     VoiceCatalog voices,
     StreamingTts tts,
     ILogger<VoiceSession> logger,
-    InsForgeStore? insforge = null) : IAsyncDisposable
+    InsForgeStore? insforge = null,
+    VoicePipelineFactory? pipelineFactory = null,
+    AzureRealtimeVoicePipeline? azureRealtime = null) : IAsyncDisposable
 {
     private const int DevicePcmFrameBytes = 960;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -93,26 +97,166 @@ public sealed class VoiceSession(
     {
         await CancelActiveTurnAsync();
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(sessionToken);
-        var speech = new StreamingSpeechTurn(
-            configuration.AzureSpeech, context.Profile.RecognitionLanguage, partial =>
+
+        // Resolve the pipeline for this turn (settings override default; unconfigured pipelines fall
+        // back to classic). Resolution may need the owner's settings row, so do it up-front.
+        DeviceSettings? startSettings = null;
+        if (insforge is not null && context.OwnerId is not null)
         {
-            _ = SendControlAsync(new ControlMessage
+            try { startSettings = await insforge.LoadSettingsAsync(context.OwnerId, cancellation.Token); }
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                Type = "transcript.delta",
-                TurnId = turnId,
-                Text = partial,
-            }, cancellation.Token);
+                logger.LogWarning(exception, "Could not load settings to resolve pipeline; using default");
+            }
+        }
+        string pipelineId = pipelineFactory?.ResolveId(startSettings) ?? VoicePipelineIds.Classic;
+        var micFrames = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true,
         });
-        var turn = new ActiveTurn(turnId, speech, cancellation);
+
+        bool isClassic = string.Equals(pipelineId, VoicePipelineIds.Classic, StringComparison.OrdinalIgnoreCase);
+        StreamingSpeechTurn? speech = null;
+        if (isClassic)
+        {
+            speech = new StreamingSpeechTurn(
+                configuration.AzureSpeech, context.Profile.RecognitionLanguage, partial =>
+            {
+                _ = SendControlAsync(new ControlMessage
+                {
+                    Type = "transcript.delta",
+                    TurnId = turnId,
+                    Text = partial,
+                }, cancellation.Token);
+            });
+        }
+
+        var turn = new ActiveTurn(turnId, pipelineId, speech, micFrames, cancellation);
         lock (_turnGate)
         {
             _activeTurn = turn;
             _speakerSequence = 0;
             _nextSpeakerFrameDueMs = 0;
         }
-        await speech.StartAsync();
+        if (speech is not null)
+        {
+            await speech.StartAsync();
+        }
+        else if (turn.IsRealtime)
+        {
+            // Realtime S2S: open the session now so mic audio streams during the button hold.
+            turn.RealtimeRun = RunAzureRealtimeTurnAsync(turn, startSettings, sessionToken);
+        }
         await SendControlAsync(new ControlMessage { Type = "turn.ready", TurnId = turnId }, sessionToken);
-        logger.LogInformation("Turn {TurnId} recognition started", turnId);
+        logger.LogInformation("Turn {TurnId} started (pipeline={PipelineId})", turnId, pipelineId);
+    }
+
+    /// <summary>Realtime S2S turn: stream mic PCM (upsampled to 24k) to Azure realtime, relay
+    /// assistant PCM back to the device as it arrives. server_vad detects end-of-speech; on button
+    /// release (commit) the mic channel closes and the pump finishes feeding the model.</summary>
+    private async Task RunAzureRealtimeTurnAsync(
+        ActiveTurn turn, DeviceSettings? settings, CancellationToken sessionToken)
+    {
+        if (azureRealtime is null)
+        {
+            await SendControlAsync(new ControlMessage { Type = "error",
+                Text = "Realtime pipeline not configured." }, turn.Cancellation.Token);
+            return;
+        }
+        try
+        {
+            await SendControlAsync(new ControlMessage { Type = "tts.start", TurnId = turn.TurnId },
+                turn.Cancellation.Token);
+            var turnContext = new SessionRealtimeTurnContext(this, configuration, context, turn, settings);
+            await azureRealtime.RunTurnAsync(turnContext, turn.Cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Realtime turn {TurnId} failed", turn.TurnId);
+            await SendControlAsync(new ControlMessage { Type = "error",
+                Text = $"Realtime failed: {exception.Message}" }, CancellationToken.None);
+        }
+    }
+
+    /// <summary>Adapter exposing the active device session to the realtime pipeline.</summary>
+    private sealed class SessionRealtimeTurnContext(
+        VoiceSession session,
+        RelayConfiguration configuration,
+        AssistantContext context,
+        ActiveTurn turn,
+        DeviceSettings? settings) : AzureRealtimeTurnContext
+    {
+        public override RelayConfiguration Configuration { get; } = configuration;
+        public override PerTurnLatency Latency => turn.Latency;
+        public override string VoiceServiceName =>
+            settings?.Voice ?? context.Profile.DefaultVoiceId;
+        public override string Language => settings?.Language ?? "en-IN";
+
+        public override ValueTask EmitTranscriptAsync(string text, bool isFinal, CancellationToken ct) =>
+            new(session.SendControlAsync(new ControlMessage
+            {
+                Type = isFinal ? "transcript.final" : "transcript.delta",
+                TurnId = turn.TurnId,
+                Text = isFinal ? null : text,
+            }, turn.Cancellation.Token));
+
+        public override ValueTask EmitResponseDeltaAsync(string delta, CancellationToken ct) =>
+            new(session.SendControlAsync(new ControlMessage
+            {
+                Type = "response.delta", TurnId = turn.TurnId, Text = delta,
+            }, turn.Cancellation.Token));
+
+        public override ValueTask EmitAssistantPcmAsync(ReadOnlyMemory<byte> pcm24k, CancellationToken ct) =>
+            // Realtime output is already 24 kHz — exactly what the device speaker expects.
+            session.QueueSpeakerFrame(turn.TurnId, pcm24k, turn.Cancellation.Token);
+
+        public override async ValueTask EmitCompletedAsync(CancellationToken ct)
+        {
+            turn.Latency.MarkCompleted();
+            await session.SendControlAsync(new ControlMessage { Type = "tts.end", TurnId = turn.TurnId },
+                turn.Cancellation.Token);
+            await session.SendControlAsync(new ControlMessage { Type = "turn.complete", TurnId = turn.TurnId },
+                turn.Cancellation.Token);
+        }
+
+        public override async Task PumpAudioAsync(
+            Func<ReadOnlyMemory<byte>, CancellationToken, Task> send, CancellationToken cancellationToken)
+        {
+            // 16 kHz mono PCM16 → 320 samples (640 bytes) per 20 ms frame.
+            var carry = new MemoryStream();
+            await foreach (byte[] frame in turn.MicFrames.Reader.ReadAllAsync(cancellationToken))
+            {
+                carry.Write(frame, 0, frame.Length);
+                byte[] buffered = carry.GetBuffer();
+                int available = (int)carry.Length;
+                int offset = 0;
+                const int frameBytes = 640;
+                while (available - offset >= frameBytes)
+                {
+                    byte[] chunk = new byte[frameBytes];
+                    Array.Copy(buffered, offset, chunk, 0, frameBytes);
+                    await send(AzureRealtimeVoicePipeline.Resample16kTo24k(chunk), cancellationToken);
+                    offset += frameBytes;
+                }
+                // Keep the remainder for the next frame.
+                var remainder = new MemoryStream();
+                if (offset < available)
+                {
+                    remainder.Write(buffered, offset, available - offset);
+                }
+                carry = remainder;
+            }
+            // Flush any trailing samples (pad to a full frame is unnecessary; server_vad tolerates it).
+            if (carry.Length > 0)
+            {
+                await send(AzureRealtimeVoicePipeline.Resample16kTo24k(carry.ToArray()), cancellationToken);
+            }
+        }
     }
 
     private void HandleAudio(byte[] message)
@@ -135,7 +279,16 @@ public sealed class VoiceSession(
         {
             throw new InvalidOperationException("Microphone audio sequence gap.");
         }
-        turn.Speech.Write(frame.Pcm.Span);
+        turn.Latency.MarkFirstMic();
+        if (turn.Speech is not null)
+        {
+            turn.Speech.Write(frame.Pcm.Span);
+        }
+        else
+        {
+            // Realtime/Gemini: buffer PCM frames for the turn-context pump to upsample+send.
+            turn.MicFrames.Writer.TryWrite(frame.Pcm.ToArray());
+        }
     }
 
     private void CommitTurn(uint turnId, CancellationToken sessionToken)
@@ -150,15 +303,30 @@ public sealed class VoiceSession(
             }
             turn.Committed = true;
         }
+        // Close the mic channel so the realtime pump drains and finishes feeding the model.
+        turn.MicFrames.Writer.TryComplete();
         _ = ProcessTurnAsync(turn, sessionToken);
     }
 
     private async Task ProcessTurnAsync(ActiveTurn turn, CancellationToken sessionToken)
     {
+        // Realtime/Gemini turns are fully handled by RunAzureRealtimeTurnAsync (started at turn
+        // start). Here we only await completion so errors surface and the turn cleans up.
+        if (turn.IsRealtime)
+        {
+            if (turn.RealtimeRun is not null)
+            {
+                try { await turn.RealtimeRun; }
+                catch (OperationCanceledException) { /* cancelled mid-turn */ }
+            }
+            return;
+        }
+
         long started = Environment.TickCount64;
         try
         {
-            string transcript = await turn.Speech.CompleteAsync(turn.Cancellation.Token);
+            string transcript = await turn.Speech!.CompleteAsync(turn.Cancellation.Token);
+            turn.Latency.MarkSttFinal();
             await SendControlAsync(new ControlMessage
             {
                 Type = "transcript.final",
@@ -271,6 +439,7 @@ public sealed class VoiceSession(
                 await foreach (string delta in agentResponder.StreamTextAsync(
                                     new AssistantTurn(context, transcript), turn.Cancellation.Token))
                 {
+                    turn.Latency.MarkAgentFirstToken();
                     await SendControlAsync(new ControlMessage
                     {
                         Type = "response.delta",
@@ -279,11 +448,13 @@ public sealed class VoiceSession(
                     }, turn.Cancellation.Token);
                     yield return delta;
                 }
+                turn.Latency.MarkAgentComplete();
             }
 
             await tts.SynthesizeAsync(TextChunks(), selectedVoice.ServiceName,
                 async (pcm, cancellationToken) =>
             {
+                turn.Latency.MarkTtsFirstAudio();
                 for (int offset = 0; offset < pcm.Length; offset += DevicePcmFrameBytes)
                 {
                     int length = Math.Min(DevicePcmFrameBytes, pcm.Length - offset);
@@ -299,12 +470,14 @@ public sealed class VoiceSession(
                 }
             }, turn.Cancellation.Token);
 
+            turn.Latency.MarkTtsComplete();
+            turn.Latency.MarkCompleted();
             await SendControlAsync(new ControlMessage { Type = "tts.end", TurnId = turn.TurnId },
                 turn.Cancellation.Token);
             await SendControlAsync(new ControlMessage { Type = "turn.complete", TurnId = turn.TurnId },
                 turn.Cancellation.Token);
-            logger.LogInformation("Turn {TurnId} completed in {ElapsedMs} ms", turn.TurnId,
-                Environment.TickCount64 - started);
+            logger.LogInformation("Turn {TurnId} completed in {ElapsedMs} ms ({LatencySummary})",
+                turn.TurnId, Environment.TickCount64 - started, turn.Latency.Summary());
         }
         catch (OperationCanceledException)
         {
@@ -368,6 +541,35 @@ public sealed class VoiceSession(
 
     private Task SendControlAsync(ControlMessage message, CancellationToken cancellationToken) =>
         SendAsync(RelayProtocol.SerializeControl(message), WebSocketMessageType.Text, cancellationToken);
+
+    /// <summary>Send one 24 kHz speaker PCM buffer to the device, paced/sequenced like the classic
+    /// TTS path. Used by the realtime pipeline, whose output already matches the device format.</summary>
+    private async ValueTask QueueSpeakerFrame(
+        uint turnId, ReadOnlyMemory<byte> pcm24k, CancellationToken cancellationToken)
+    {
+        ActiveTurn? turn;
+        lock (_turnGate)
+        {
+            turn = _activeTurn;
+        }
+        if (turn is null || turn.TurnId != turnId)
+        {
+            return;
+        }
+        for (int offset = 0; offset < pcm24k.Length; offset += DevicePcmFrameBytes)
+        {
+            int length = Math.Min(DevicePcmFrameBytes, pcm24k.Length - offset);
+            uint? sequence = await ReserveSpeakerSequenceAsync(turn, cancellationToken);
+            if (!sequence.HasValue)
+            {
+                return;
+            }
+            byte[] frame = RelayProtocol.EncodeAudio(
+                AudioFrameKind.SpeakerPcm, turnId, sequence.Value,
+                pcm24k.Span.Slice(offset, length));
+            await SendBinaryAsync(frame, cancellationToken);
+        }
+    }
 
     private async Task<uint?> ReserveSpeakerSequenceAsync(ActiveTurn turn,
                                                            CancellationToken cancellationToken)
@@ -453,16 +655,27 @@ public sealed class VoiceSession(
 
     private sealed class ActiveTurn(
         uint turnId,
-        StreamingSpeechTurn speech,
+        string pipelineId,
+        StreamingSpeechTurn? speech,
+        Channel<byte[]> micFrames,
         CancellationTokenSource cancellation) : IAsyncDisposable
     {
         private int _disposed;
         public uint TurnId { get; } = turnId;
-        public StreamingSpeechTurn Speech { get; } = speech;
+        public string PipelineId { get; } = pipelineId;
+        public StreamingSpeechTurn? Speech { get; } = speech;
+        public Channel<byte[]> MicFrames { get; } = micFrames;
         public CancellationTokenSource Cancellation { get; } = cancellation;
         public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+        public PerTurnLatency Latency { get; } = new();
         public uint NextMicrophoneSequence { get; set; }
         public bool Committed { get; set; }
+
+        /// <summary>The running realtime S2S session task (non-classic pipelines), started at
+        /// turn start and completed when the model finishes its response.</summary>
+        public Task? RealtimeRun { get; set; }
+
+        public bool IsRealtime => !string.Equals(PipelineId, VoicePipelineIds.Classic, StringComparison.OrdinalIgnoreCase);
 
         public async ValueTask DisposeAsync()
         {
@@ -470,7 +683,11 @@ public sealed class VoiceSession(
             {
                 return;
             }
-            await Speech.DisposeAsync();
+            MicFrames.Writer.TryComplete();
+            if (Speech is not null)
+            {
+                await Speech.DisposeAsync();
+            }
             Cancellation.Dispose();
         }
     }

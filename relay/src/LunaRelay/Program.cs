@@ -13,7 +13,9 @@ var configuration = new RelayConfiguration(
     builder.Configuration.GetSection("AzureOpenAI").Get<AzureOpenAiOptions>() ?? new AzureOpenAiOptions(),
     builder.Configuration.GetSection("Firestore").Get<FirestoreOptions>() ?? new FirestoreOptions(),
     builder.Configuration.GetSection("Assistant").Get<AssistantOptions>() ?? new AssistantOptions(),
-    builder.Configuration.GetSection("InsForge").Get<InsForgeOptions>() ?? new InsForgeOptions());
+    builder.Configuration.GetSection("InsForge").Get<InsForgeOptions>() ?? new InsForgeOptions(),
+    builder.Configuration.GetSection("GeminiLive").Get<GeminiLiveOptions>() ?? new GeminiLiveOptions(),
+    builder.Configuration.GetSection("Pipelines").Get<PipelinesOptions>() ?? new PipelinesOptions());
 VoiceCatalog voices = VoiceCatalog.Create(configuration.AzureSpeech.DefaultServiceVoice);
 ToolRegistry tools = ToolRegistry.Empty;
 configuration.Validate(voices, tools);
@@ -63,6 +65,9 @@ else
     builder.Services.AddHttpClient<IAgentResponder, AzureOpenAiChatClient>();
 }
 builder.Services.AddSingleton<StreamingTts>();
+// Phase 4: speech pipelines. Factory resolves per-turn; realtime pipeline is stateless.
+builder.Services.AddSingleton<VoicePipelineFactory>();
+builder.Services.AddSingleton<AzureRealtimeVoicePipeline>();
 builder.Services.AddTransient<VoiceSession>();
 
 WebApplication app = builder.Build();
