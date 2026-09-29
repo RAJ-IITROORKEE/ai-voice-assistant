@@ -40,6 +40,22 @@ function relativeTime(iso: string | null): string {
   return `${day}d ago`;
 }
 
+// Push-to-talk is momentary: the device connects for a turn then disconnects, so
+// `online` is only true mid-turn. Treat a recent heartbeat as "active" so the UI
+// doesn't mislead by showing "Offline" for a device that just spoke.
+const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+type Presence = { label: string; variant: "default" | "secondary" | "outline" };
+
+function presence(d: DeviceRow): Presence {
+  if (d.online) return { label: "Online", variant: "default" };
+  const then = d.last_seen ? new Date(d.last_seen).getTime() : NaN;
+  if (!Number.isNaN(then) && Date.now() - then < ACTIVE_WINDOW_MS) {
+    return { label: "Recently active", variant: "secondary" };
+  }
+  return { label: "Offline", variant: "outline" };
+}
+
 export function DevicesPanel() {
   const [devices, setDevices] = React.useState<DeviceRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -124,9 +140,9 @@ export function DevicesPanel() {
                   </CardDescription>
                 </div>
               </div>
-              <Badge variant={d.online ? "default" : "secondary"}>
+              <Badge variant={presence(d).variant}>
                 <CircleDot className="mr-1 size-3" />
-                {d.online ? "Online" : "Offline"}
+                {presence(d).label}
               </Badge>
             </CardHeader>
             <CardContent className="text-muted-foreground grid grid-cols-2 gap-2 text-sm">

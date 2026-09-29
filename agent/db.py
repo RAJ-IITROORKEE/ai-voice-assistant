@@ -43,10 +43,29 @@ def _thread_uuid(user_sub: str, thread_id: Optional[str]) -> uuid.UUID:
         return uuid.uuid5(uuid.NAMESPACE_URL, f"thread:{user_sub}:{tid}")
 
 
+async def _resolve_device_uuid(user_sub: str, thread_id: Optional[str]) -> Optional[str]:
+    """Map a relay thread_id like 'device-esp32-b43a45bd1d9c' to the devices.id row (uuid),
+    so device conversations are linked to the device that produced them. None for web turns."""
+    if not thread_id or not thread_id.startswith("device-"):
+        return None
+    device_key = thread_id[len("device-"):]
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            "SELECT id FROM devices WHERE device_id = %s LIMIT 1", (device_key,)
+        )
+        row = await cur.fetchone()
+    return str(row[0]) if row else None
+
+
 async def get_or_create_conversation(
     user_sub: str, thread_id: Optional[str], source: str = "web"
 ) -> str:
     thread_uuid = _thread_uuid(user_sub, thread_id)
+    device_uuid = await _resolve_device_uuid(user_sub, thread_id) if source == "device" else None
     pool = await get_pool()
     async with pool.connection() as conn:
         await conn.execute(
@@ -54,11 +73,12 @@ async def get_or_create_conversation(
         )
         await conn.execute(
             """
-            INSERT INTO conversations (id, user_id, title, source)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING
+            INSERT INTO conversations (id, user_id, title, source, device_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+              SET device_id = COALESCE(conversations.device_id, EXCLUDED.device_id)
             """,
-            (str(thread_uuid), user_sub, "New chat", source),
+            (str(thread_uuid), user_sub, "New chat", source, device_uuid),
         )
     return str(thread_uuid)
 
