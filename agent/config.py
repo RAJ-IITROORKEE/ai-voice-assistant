@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     )
     max_history_messages: int = 40
 
+    # Optional: richer web search (Tavily). When unset, the agent uses a keyless
+    # DuckDuckGo instant-answer search instead.
+    tavily_api_key: str = ""
+    # Optional: Google Gemini Live (S2S) — used by the relay, not the agent.
+    google_api_key: str = ""
+
     cors_origins: str = "*"
 
 

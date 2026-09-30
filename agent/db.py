@@ -134,6 +134,76 @@ async def record_tool_call(
         )
 
 
+async def add_reminder(
+    user_sub: str, task: str, remind_at: Optional[str], note: Optional[str]
+) -> str:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            "INSERT INTO reminders (user_id, task, remind_at, note) VALUES (%s, %s, %s, %s) RETURNING id",
+            (user_sub, task, remind_at, note),
+        )
+        row = await cur.fetchone()
+    return str(row[0])
+
+
+async def list_reminders(user_sub: str, include_done: bool = False) -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            """
+            SELECT task, remind_at, note, done FROM reminders
+            WHERE user_id = %s AND (%s OR done = false)
+            ORDER BY done ASC, remind_at ASC NULLS LAST, created_at DESC LIMIT 20
+            """,
+            (user_sub, include_done),
+        )
+        rows = await cur.fetchall()
+    return [{"task": r[0], "remind_at": str(r[1]) if r[1] else None, "note": r[2], "done": r[3]} for r in rows]
+
+
+async def save_note(
+    user_sub: str, title: str, body: Optional[str], kind: str = "note", tags: Optional[list[str]] = None
+) -> str:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            "INSERT INTO notes (user_id, kind, title, body, tags) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (user_sub, kind, title, body, tags),
+        )
+        row = await cur.fetchone()
+    return str(row[0])
+
+
+async def list_notes(user_sub: str, kind: Optional[str] = None, open_only: bool = False) -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            """
+            SELECT kind, title, body, tags, done FROM notes
+            WHERE user_id = %s AND (%s IS NULL OR kind = %s) AND (%s OR done = false)
+            ORDER BY created_at DESC LIMIT 20
+            """,
+            (user_sub, kind, kind, open_only),
+        )
+        rows = await cur.fetchall()
+    return [
+        {"kind": r[0], "title": r[1], "body": r[2], "tags": r[3], "done": r[4]} for r in rows
+    ]
+
+
 async def maybe_set_title(user_sub: str, thread_id: str, first_user_text: str) -> None:
     title = first_user_text.strip().splitlines()[0][:80] if first_user_text.strip() else "New chat"
     pool = await get_pool()

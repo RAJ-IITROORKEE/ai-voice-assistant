@@ -14,6 +14,13 @@ namespace LunaRelay;
 /// </summary>
 public sealed class AzureRealtimeVoicePipeline
 {
+    private readonly ILogger<AzureRealtimeVoicePipeline> _logger;
+
+    public AzureRealtimeVoicePipeline(ILogger<AzureRealtimeVoicePipeline> logger)
+    {
+        _logger = logger;
+    }
+
     public string Id => VoicePipelineIds.AzureRealtime;
 
     public async Task RunTurnAsync(AzureRealtimeTurnContext turn, CancellationToken cancellationToken)
@@ -28,7 +35,9 @@ public sealed class AzureRealtimeVoicePipeline
         using ClientWebSocket ws = new();
         ws.Options.SetRequestHeader("api-key", options.ApiKey);
         ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+        _logger.LogInformation("Realtime: connecting to {Url}", url.Replace(options.ApiKey ?? "", "***"));
         await ws.ConnectAsync(new Uri(url), cancellationToken);
+        _logger.LogInformation("Realtime: WS connected (state={State})", ws.State);
 
         string language = (turn.Language ?? "en-IN").Split('-')[0];
         await SendJsonAsync(ws, new
@@ -58,7 +67,7 @@ public sealed class AzureRealtimeVoicePipeline
                     },
                     output = new
                     {
-                        voice = string.IsNullOrWhiteSpace(turn.VoiceServiceName) ? "alloy" : turn.VoiceServiceName,
+                        voice = MapToRealtimeVoice(turn.VoiceServiceName),
                         format = new { type = "audio/pcm", rate = 24000 },
                     },
                 },
@@ -84,9 +93,18 @@ public sealed class AzureRealtimeVoicePipeline
         }, cancellationToken);
 
         // Pump microphone audio (16 kHz from device -> upsample to 24 kHz) until commit.
+        long framesSent = 0;
+        long bytesSent = 0;
         await turn.PumpAudioAsync(
-            (pcm16k, ct) => SendAudioAsync(ws, Resample16kTo24k(pcm16k), ct),
+            (pcm16k, ct) =>
+            {
+                byte[] pcm24k = Resample16kTo24k(pcm16k);
+                framesSent++;
+                bytesSent += pcm24k.Length;
+                return SendAudioAsync(ws, pcm24k, ct);
+            },
             cancellationToken);
+        _logger.LogInformation("Realtime: mic pump finished, frames={Frames} bytes24k={Bytes}", framesSent, bytesSent);
 
         // Wait for the model to finish responding (response.done) or error/cancel.
         await done.Task.WaitAsync(TimeSpan.FromSeconds(90), cancellationToken);
@@ -109,7 +127,7 @@ public sealed class AzureRealtimeVoicePipeline
                 audio = Convert.ToBase64String(pcm24k),
             }, ct);
 
-    private static async Task ReceiveLoopAsync(
+    private async Task ReceiveLoopAsync(
         ClientWebSocket ws, AzureRealtimeTurnContext turn, CancellationToken ct)
     {
         byte[] buffer = new byte[64 * 1024];
@@ -123,6 +141,8 @@ public sealed class AzureRealtimeVoicePipeline
                 result = await ws.ReceiveAsync(buffer, ct);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    _logger.LogInformation("Realtime: server closed WS (status={Status}, desc={Desc})",
+                        ws.CloseStatus, ws.CloseStatusDescription);
                     return;
                 }
                 message.Write(buffer, 0, result.Count);
@@ -135,7 +155,7 @@ public sealed class AzureRealtimeVoicePipeline
         }
     }
 
-    private static async Task HandleEventAsync(byte[] utf8, AzureRealtimeTurnContext turn, CancellationToken ct)
+    private async Task HandleEventAsync(byte[] utf8, AzureRealtimeTurnContext turn, CancellationToken ct)
     {
         using JsonDocument doc = JsonDocument.Parse(utf8);
         JsonElement root = doc.RootElement;
@@ -143,8 +163,22 @@ public sealed class AzureRealtimeVoicePipeline
         {
             return;
         }
-        switch (typeEl.GetString())
+        string eventType = typeEl.GetString() ?? "";
+        switch (eventType)
         {
+            case "session.created":
+            case "session.updated":
+                _logger.LogInformation("Realtime: {EventType}", eventType);
+                break;
+            case "input_audio_buffer.speech_started":
+                _logger.LogInformation("Realtime: VAD speech_started");
+                break;
+            case "input_audio_buffer.speech_stopped":
+                _logger.LogInformation("Realtime: VAD speech_stopped");
+                break;
+            case "input_audio_buffer.committed":
+                _logger.LogInformation("Realtime: input committed");
+                break;
             case "conversation.item.input_audio_transcription.delta":
                 if (root.TryGetProperty("delta", out JsonElement td))
                 {
@@ -173,13 +207,16 @@ public sealed class AzureRealtimeVoicePipeline
                 break;
             case "response.output_audio.done":
                 turn.Latency.MarkTtsComplete();
+                _logger.LogInformation("Realtime: output_audio.done");
                 break;
             case "response.done":
                 turn.Latency.MarkAgentComplete();
+                _logger.LogInformation("Realtime: response.done (turn complete)");
                 await turn.EmitCompletedAsync(ct);
                 break;
             case "error":
                 string err = root.TryGetProperty("error", out JsonElement e) ? e.ToString() : "unknown";
+                _logger.LogError("Realtime: server error {Error}", err);
                 throw new InvalidOperationException($"Azure Realtime error: {err}");
         }
     }
@@ -188,6 +225,48 @@ public sealed class AzureRealtimeVoicePipeline
     {
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
         await ws.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
+    }
+
+    /// <summary>Realtime S2S voices supported by the GA realtime API.</summary>
+    private static readonly HashSet<string> RealtimeVoices = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar",
+    };
+
+    /// <summary>
+    /// The realtime API only accepts its own voice names, NOT Azure TTS names (e.g.
+    /// "en-IN-NeerjaNeural"). If the configured voice is a valid realtime voice, use it;
+    /// otherwise map an Azure TTS voice to the closest realtime voice, defaulting to "alloy".
+    /// Neerja is a feminine Indian-English voice; "marin" is the closest natural feminine GA voice.
+    /// </summary>
+    private static string MapToRealtimeVoice(string? configuredVoice)
+    {
+        if (string.IsNullOrWhiteSpace(configuredVoice))
+        {
+            return "alloy";
+        }
+        string voice = configuredVoice.Trim();
+        if (RealtimeVoices.Contains(voice))
+        {
+            return voice.ToLowerInvariant();
+        }
+        // Azure TTS service names look like "en-IN-NeerjaNeural" — map common ones.
+        if (voice.Contains('-'))
+        {
+            if (voice.Contains("Neerja", StringComparison.OrdinalIgnoreCase) ||
+                voice.Contains("Swara", StringComparison.OrdinalIgnoreCase) ||
+                voice.Contains("Aditi", StringComparison.OrdinalIgnoreCase))
+            {
+                return "marin";
+            }
+            if (voice.Contains("Prabhat", StringComparison.OrdinalIgnoreCase) ||
+                voice.Contains("Arjun", StringComparison.OrdinalIgnoreCase))
+            {
+                return "echo";
+            }
+            return "alloy";
+        }
+        return "alloy";
     }
 
     /// <summary>

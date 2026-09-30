@@ -13,11 +13,22 @@ and a path to MCP-provided tools.
 
 ### Agent (Python) — `agent/`
 
-- **`tools.py`** (new) — two no-key built-in tools via `@tool`:
+- **`tools.py`** (new) — built-in tools via `@tool`:
+  - `web_search` — keyless web search: DuckDuckGo instant answers → Wikipedia summary → DuckDuckGo
+    lite snippets (no API key needed). Optional richer results via `TAVILY_API_KEY` (free tier).
+  - `set_reminder` / `list_reminders_tool` — persist to a new `reminders` table (RLS-scoped per user).
+  - `save_note_tool` / `list_notes_tool` — structured notes/tasks in a new `notes` table
+    (`kind='note'|'task'`, tasks carry a `done` flag).
+  - `get_current_time`, `calculator` (from earlier in the phase).
+  - Reminder/note tools read the caller's `user_sub` via LangChain `InjectedState` so rows are
+    RLS-scoped to the signed-in user / device owner.
   - `calculator` — safe arithmetic via `ast` (only `+ - * / % // **`, parentheses, unary `+/-`;
     any other node type is rejected before `eval`).
   - `get_current_time` — current UTC time (ISO 8601).
-  - `BUILTIN_TOOLS` list consumed by the graph.
+  - `BUILTIN_TOOLS` list consumed by the graph (7 tools total).
+
+New Postgres tables (RLS `auth.uid() = user_id`): `reminders(id, user_id, task, remind_at, note, done)`
+and `notes(id, user_id, kind, title, body, tags, done, created_at, updated_at)`.
 - **`graph.py`** (rewritten) — real tool loop:
   - `AgentState{messages: Annotated[list, add_messages], user_sub, thread_id}`.
   - `call_model` binds `_build_model().bind_tools(BUILTIN_TOOLS)`.
@@ -52,8 +63,8 @@ and a path to MCP-provided tools.
 
 ## Deployment
 
-- Agent `luna-agent:v4` (tools) → ACA, `/health` ok.
-- Relay `luna-relay:v10` (heartbeat) → ACA, `/health` ready.
+- Agent `luna-agent:v5` (tool loop + web_search + reminders + notes) → ACA, `/health` ok.
+- Relay `luna-relay:v12` (heartbeat + realtime voice-map fix + diagnostic logging) → ACA, `/health` ready.
 - Web app redeployed to Vercel (`/tools`, `/mcp`, `/devices`, `/conversations`, `/` all 200).
 
 ## Verification
@@ -67,11 +78,14 @@ and a path to MCP-provided tools.
 
 ## Deviations
 
-- **No web search tool** — there is no search API key configured; per the locked decision the phase
-  ships the two no-key built-ins. Adding Tavily/Bing is a one-line tool registration later.
-- **MCP is a UI scaffold** — the `mcp_servers` table is surfaced read-only; actually connecting to
-  external MCP servers and merging their tools into the agent's toolset is Phase 6 work (needs the
-  MCP client + per-server auth + tool allow-listing).
+- **Web search is keyless, not Azure Grounding-with-Bing.** No Bing/Search/Grounding resource exists
+  in the Azure subscription, so the agent uses a free keyless chain (DuckDuckGo instant answers →
+  Wikipedia → DuckDuckGo lite). This covers encyclopedic/definitional queries well; live market/news
+  data is limited without a key. **Upgrade path:** set `TAVILY_API_KEY` (Tavily free tier, ~1000
+  credits/mo) to get rich live results — one env var, no code change.
+- **MCP is a UI scaffold** — the `mcp_servers` table is surfaced read-only; connecting to external
+  MCP servers (Notion, Gmail, etc.) and merging their tools into the agent is Phase 6 work (needs the
+  `langchain-mcp-adapters` client + per-server OAuth/token, which requires your credentials).
 
 ## Next
 

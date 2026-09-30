@@ -17,7 +17,7 @@
 | 2 | LangGraph agent service (ACA) | ✅ gate passed | https://luna-agent.gentlecoast-5d201a63.centralindia.azurecontainerapps.io — OpenAI-compat SSE, JWT auth, Postgres memory; web app proxies to it | `v1.2` |
 | 3 | Relay↔agent sync + conversations | ✅ gate passed | Device WS → owner resolved + device upserted; LLM via luna-agent (`source=device`) → Postgres; web app shows devices/conversations/settings live; conversation ops (pin/archive/delete) work | `v1.3` |
 | 4 | Speech pipelines (realtime S2S) | ✅ done | `IVoicePipeline` + Classic (unchanged) + Azure Realtime S2S (`gpt-realtime-2.1`, v1 protocol) + Gemini scaffold; per-turn latency; settings-driven pipeline. Relay v9 deployed. | `v1.4` |
-| 5 | Tools & MCP | ✅ done | Agent LangGraph tool loop (`calculator`, `get_current_time`); tool_calls persisted to Postgres; tools + mcp panels live in web UI (MCP connections scaffold, live wiring in Phase 6). Agent v4 + relay v10 (device Online heartbeat) deployed | `v1.5` (pending commit) |
+| 5 | Tools & MCP | ✅ done | Agent LangGraph tool loop with 7 tools: calculator, get_current_time, web_search (keyless DDG/Wikipedia), set/list reminders, save/list notes+tasks (new `reminders` + `notes` RLS tables); tool_calls persisted; tools + mcp panels live (MCP connections scaffold). Agent v5 + relay v12 (heartbeat + realtime voice fix + diag logs) deployed | `v1.5` (pending commit) |
 | 6 | Memory & voice profiles + MCP | ⬜ not started | — | `v2.0` |
 
 Legend: ⬜ not started · 🟡 in progress · ✅ gate passed
