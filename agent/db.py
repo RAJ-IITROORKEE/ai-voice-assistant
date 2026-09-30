@@ -204,6 +204,34 @@ async def list_notes(user_sub: str, kind: Optional[str] = None, open_only: bool 
     ]
 
 
+async def list_mcp_servers(user_sub: str) -> list[dict[str, Any]]:
+    """Return enabled MCP servers for a user (used to attach remote tools to the agent)."""
+    pool = await get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            "SELECT set_config('request.jwt.claims', %s, true)", (_claims(user_sub),)
+        )
+        cur = await conn.execute(
+            """
+            SELECT name, url, transport, auth_token, read_only, allowed_tools
+            FROM mcp_servers WHERE user_id = %s AND enabled = true ORDER BY created_at ASC
+            """,
+            (user_sub,),
+        )
+        rows = await cur.fetchall()
+    return [
+        {
+            "name": r[0],
+            "url": r[1],
+            "transport": r[2],
+            "auth_token": r[3],
+            "read_only": r[4],
+            "allowed_tools": list(r[5]) if r[5] else [],
+        }
+        for r in rows
+    ]
+
+
 async def maybe_set_title(user_sub: str, thread_id: str, first_user_text: str) -> None:
     title = first_user_text.strip().splitlines()[0][:80] if first_user_text.strip() else "New chat"
     pool = await get_pool()

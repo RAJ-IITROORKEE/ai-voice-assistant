@@ -22,15 +22,39 @@ type BuiltInTool = {
 // Hardwired in the Python agent — always on, no toggle.
 const BUILT_IN_TOOLS: BuiltInTool[] = [
   {
+    id: "web_search",
+    name: "web_search",
+    description: "Search the web (DuckDuckGo/Wikipedia) for facts and definitions.",
+  },
+  {
     id: "calculator",
     name: "calculator",
-    description:
-      "Evaluate arithmetic expressions safely (+ - * / % // ** and parentheses).",
+    description: "Evaluate arithmetic safely (+ - * / % // ** and parentheses).",
   },
   {
     id: "get_current_time",
     name: "get_current_time",
     description: "Get the current UTC time (ISO 8601).",
+  },
+  {
+    id: "set_reminder",
+    name: "set_reminder",
+    description: "Set a reminder for a task at a given time.",
+  },
+  {
+    id: "list_reminders_tool",
+    name: "list_reminders",
+    description: "List your open reminders.",
+  },
+  {
+    id: "save_note_tool",
+    name: "save_note",
+    description: "Save a structured note or task with title and body.",
+  },
+  {
+    id: "list_notes_tool",
+    name: "list_notes",
+    description: "List your saved notes and tasks.",
   },
 ];
 
@@ -106,7 +130,7 @@ export function ToolsPanel() {
   }, [load]);
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto p-6">
       <div>
         <h2 className="text-lg font-semibold">Active tools</h2>
         <p className="text-muted-foreground text-sm">
@@ -114,26 +138,29 @@ export function ToolsPanel() {
         </p>
       </div>
 
-      {BUILT_IN_TOOLS.map((t) => (
-        <Card key={t.id}>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <div className="flex items-center gap-3">
-              <div className="bg-muted flex size-10 items-center justify-center rounded-lg">
-                <Wrench className="size-5" />
-              </div>
-              <div>
-                <CardTitle className="text-base">{t.name}</CardTitle>
-                <CardDescription>{t.description}</CardDescription>
-              </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {BUILT_IN_TOOLS.map((t) => (
+          <div
+            key={t.id}
+            className="flex items-start gap-3 rounded-lg border px-3 py-2.5"
+          >
+            <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-md">
+              <Wrench className="text-muted-foreground size-4" />
             </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">built-in</Badge>
-              <Badge variant="default">active</Badge>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-medium">{t.name}</span>
+                <Badge variant="default" className="shrink-0 px-1.5 py-0 text-[10px]">
+                  active
+                </Badge>
+              </div>
+              <p className="text-muted-foreground mt-0.5 text-xs leading-snug">
+                {t.description}
+              </p>
             </div>
-          </CardHeader>
-          <CardContent />
-        </Card>
-      ))}
+          </div>
+        ))}
+      </div>
 
       <div className="mt-4 flex items-center justify-between">
         <div>
@@ -173,43 +200,47 @@ export function ToolsPanel() {
           </CardContent>
         </Card>
       ) : (
-        calls.map((c) => (
-          <Card key={c.id}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="bg-muted flex size-10 shrink-0 items-center justify-center rounded-lg">
-                  <Wrench className="size-5" />
-                </div>
-                <div className="min-w-0">
-                  <CardTitle className="truncate text-base font-semibold">
-                    {c.tool}
-                  </CardTitle>
-                  <CardDescription className="text-xs">
-                    {relativeTime(c.created_at)}
-                  </CardDescription>
-                </div>
+        <div className="flex flex-col gap-2">
+          {calls.map((c) => (
+            <div
+              key={c.id}
+              className="flex items-center gap-3 rounded-lg border px-3 py-2.5"
+            >
+              <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-md">
+                <Wrench className="text-muted-foreground size-4" />
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {c.server && <Badge variant="outline">{c.server}</Badge>}
-                <Badge variant={c.status === "success" ? "default" : "destructive"}>
-                  {c.status}
-                </Badge>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium">{c.tool}</span>
+                  {c.server && c.server !== "built-in" && (
+                    <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
+                      {c.server}
+                    </Badge>
+                  )}
+                  <Badge
+                    variant={c.status === "success" ? "default" : "destructive"}
+                    className="shrink-0 px-1.5 py-0 text-[10px]"
+                  >
+                    {c.status}
+                  </Badge>
+                </div>
+                {c.result_summary && (
+                  <p className="mt-0.5 truncate text-xs">
+                    {truncate(c.result_summary, 80)}
+                  </p>
+                )}
+                {compactArgs(c.args) && (
+                  <p className="text-muted-foreground mt-0.5 truncate font-mono text-[11px]">
+                    {compactArgs(c.args)}
+                  </p>
+                )}
               </div>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-1 text-sm">
-              {c.result_summary && (
-                <p className="text-foreground">
-                  {truncate(c.result_summary, 80)}
-                </p>
-              )}
-              {compactArgs(c.args) && (
-                <p className="text-muted-foreground font-mono text-xs">
-                  {compactArgs(c.args)}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        ))
+              <span className="text-muted-foreground shrink-0 text-xs">
+                {relativeTime(c.created_at)}
+              </span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

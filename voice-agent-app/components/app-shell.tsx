@@ -98,13 +98,13 @@ export function AppShell({
           </SidebarFooter>
         </Sidebar>
 
-        <SidebarInset>
+        <SidebarInset className="flex min-h-0 flex-col">
           <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger />
             <Separator orientation="vertical" className="mr-2 h-4" />
             <span className="font-medium capitalize">{active}</span>
           </header>
-          <div className="flex-1 overflow-hidden">{children}</div>
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</main>
         </SidebarInset>
       </div>
     </SidebarProvider>

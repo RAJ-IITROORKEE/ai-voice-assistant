@@ -106,7 +106,7 @@ export function SettingsPanel() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto p-6">
       <div>
         <h2 className="text-lg font-semibold">Assistant settings</h2>
         <p className="text-muted-foreground text-sm">

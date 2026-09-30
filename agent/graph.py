@@ -6,11 +6,11 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
 import db
 from config import settings
+from mcp_client import load_mcp_tools
 from tools import BUILTIN_TOOLS
 
 
@@ -19,6 +19,8 @@ class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     user_sub: str
     thread_id: str
+    # MCP tools for this user/turn, loaded lazily and cached on the state.
+    mcp_tools: list[Any]
 
 
 def _build_model() -> ChatOpenAI:
@@ -40,9 +42,19 @@ def _to_lc(role: str, content: str) -> BaseMessage:
 
 
 async def call_model(state: AgentState) -> dict[str, Any]:
-    model = _build_model().bind_tools(BUILTIN_TOOLS)
+    # Lazily load this user's MCP tools once per run and cache them on the state.
+    mcp_tools = state.get("mcp_tools")
+    out: dict[str, Any] = {}
+    if mcp_tools is None:
+        try:
+            mcp_tools = await load_mcp_tools(state.get("user_sub", ""))
+        except Exception:
+            mcp_tools = []
+        out["mcp_tools"] = mcp_tools
+    model = _build_model().bind_tools(list(BUILTIN_TOOLS) + list(mcp_tools or []))
     response = await model.ainvoke(state["messages"])
-    return {"messages": [response]}
+    out["messages"] = [response]
+    return out
 
 
 def _should_continue(state: AgentState) -> str:
@@ -87,11 +99,32 @@ async def record_tools(state: AgentState) -> dict[str, Any]:
     return {}
 
 
+async def run_tools(state: AgentState) -> dict[str, Any]:
+    """Execute the tool calls in the last AIMessage against built-in + this user's MCP tools."""
+    tools_by_name = {t.name: t for t in list(BUILTIN_TOOLS) + list(state.get("mcp_tools") or [])}
+    last = state["messages"][-1]
+    results: list[ToolMessage] = []
+    if isinstance(last, AIMessage) and last.tool_calls:
+        for call in last.tool_calls:
+            tool = tools_by_name.get(call.get("name", ""))
+            if tool is None:
+                results.append(ToolMessage(
+                    content=f"Unknown tool: {call.get('name')}", tool_call_id=call["id"], status="error"))
+                continue
+            try:
+                out = await tool.ainvoke(call.get("args", {}) or {}, config={"state": state})
+                results.append(ToolMessage(
+                    content=out if isinstance(out, str) else str(out), tool_call_id=call["id"]))
+            except Exception as e:
+                results.append(ToolMessage(
+                    content=f"Tool {call.get('name')} failed: {e}", tool_call_id=call["id"], status="error"))
+    return {"messages": results}
+
+
 def build_graph():
     g = StateGraph(AgentState)
-    tool_node = ToolNode(BUILTIN_TOOLS)
     g.add_node("call_model", call_model)
-    g.add_node("tools", tool_node)
+    g.add_node("tools", run_tools)
     g.add_node("record_tools", record_tools)
     g.add_edge(START, "call_model")
     g.add_conditional_edges("call_model", _should_continue, {"tools": "tools", END: END})

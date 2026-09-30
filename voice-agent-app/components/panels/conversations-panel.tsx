@@ -160,7 +160,7 @@ export function ConversationsPanel() {
   const open = items.find((c) => c.id === openId) ?? null;
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col gap-4 overflow-y-auto p-6">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Conversations</h2>
@@ -208,30 +208,45 @@ export function ConversationsPanel() {
           </CardContent>
         </Card>
       ) : (
-        visible.map((c) => (
-          <Card key={c.id}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <div className="flex flex-col gap-2">
+          {visible.map((c) => (
+            <div
+              key={c.id}
+              className="group hover:bg-muted/50 flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors"
+            >
               <button
                 className="flex min-w-0 flex-1 items-center gap-3 text-left"
                 onClick={() => openConversation(c.id)}
               >
-                <div className="bg-muted flex size-10 shrink-0 items-center justify-center rounded-lg">
-                  <MessagesSquare className="size-5" />
+                <div className="bg-muted flex size-9 shrink-0 items-center justify-center rounded-md">
+                  <MessagesSquare className="text-muted-foreground size-4" />
                 </div>
-                <div className="min-w-0">
-                  <CardTitle className="truncate text-base">
-                    {c.title || "Untitled"}
-                  </CardTitle>
-                  <CardDescription className="text-xs">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    {c.pinned && (
+                      <Pin className="text-primary size-3 shrink-0" />
+                    )}
+                    <span className="truncate text-sm font-medium">
+                      {c.title || "Untitled"}
+                    </span>
+                    <Badge
+                      variant={c.source === "device" ? "default" : "secondary"}
+                      className="shrink-0 px-1.5 py-0 text-[10px]"
+                    >
+                      {c.source}
+                    </Badge>
+                    {c.archived && (
+                      <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
+                        archived
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
                     {relativeTime(c.updated_at)}
-                  </CardDescription>
+                  </p>
                 </div>
               </button>
-              <div className="flex shrink-0 items-center gap-1">
-                <Badge variant={c.source === "device" ? "default" : "secondary"}>
-                  {c.source}
-                </Badge>
-                {c.archived && <Badge variant="outline">archived</Badge>}
+              <div className="flex shrink-0 items-center gap-0.5">
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -239,7 +254,11 @@ export function ConversationsPanel() {
                   disabled={busy}
                   onClick={() => update(c.id, { pinned: !c.pinned })}
                 >
-                  {c.pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+                  {c.pinned ? (
+                    <PinOff className="size-4" />
+                  ) : (
+                    <Pin className="size-4" />
+                  )}
                 </Button>
                 <Button
                   variant="ghost"
@@ -264,9 +283,9 @@ export function ConversationsPanel() {
                   <Trash2 className="size-4" />
                 </Button>
               </div>
-            </CardHeader>
-          </Card>
-        ))
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Messages viewer */}
